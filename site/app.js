@@ -158,7 +158,20 @@ function render() {
   }
 }
 
-async function load() {
+let refreshTimer = null;
+
+function scheduleRefresh() {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(() => {
+    if (document.hidden) {
+      scheduleRefresh();
+      return;
+    }
+    load(true);
+  }, 60000);
+}
+
+async function load(silent) {
   const repo = repoFromInput($('repo').value);
   const remember = $('remember').checked;
 
@@ -173,11 +186,15 @@ async function load() {
 
   state.repo = repo;
   state.error = false;
-  state.buildFilter = '';
-  state.branchFilter = '';
+  if (!silent) {
+    state.buildFilter = '';
+    state.branchFilter = '';
+  }
   $('repo').value = repo;
-  setStatus('Loading...');
-  $('empty').hidden = true;
+  if (!silent) {
+    setStatus('Loading...');
+    $('empty').hidden = true;
+  }
 
   if (remember) localStorage.setItem('ghArtifacts.repo', repo);
   else localStorage.removeItem('ghArtifacts.repo');
@@ -185,11 +202,13 @@ async function load() {
   try {
     state.artifacts = await fetchArtifacts(repo);
     render();
+    scheduleRefresh();
   } catch (error) {
     state.artifacts = [];
     state.error = true;
     render();
     setStatus(error.message, true);
+    scheduleRefresh();
   }
 }
 
