@@ -2,7 +2,7 @@ const config = window.ARTIFACTS_CONFIG || {};
 const proxyBase = String(config.proxyBase || '').replace(/\/+$/, '');
 const defaultRepo = config.defaultRepo || 'TeamUberStrike/uber-client-4-3-8';
 const $ = (id) => document.getElementById(id);
-const state = { repo: '', artifacts: [] };
+const state = { repo: '', artifacts: [], buildFilter: '', branchFilter: '', error: false };
 
 function fmtBytes(bytes) {
   if (!Number.isFinite(bytes)) return '';
@@ -55,18 +55,57 @@ async function fetchArtifacts(repo) {
 }
 
 function downloadUrl(artifact) {
-  if (artifact.expired) return '';
   return `${proxyBase}/download/${state.repo}/${artifact.id}`;
+}
+
+function chip(kind, value, label, active) {
+  return `<button type="button" class="chip${active ? ' active' : ''}" data-kind="${kind}" data-value="${esc(value)}" aria-pressed="${active ? 'true' : 'false'}">${esc(label)}</button>`;
+}
+
+function renderFilters(active) {
+  const container = $('filters');
+  if (!active.length) {
+    container.hidden = true;
+    $('build-filters').innerHTML = '';
+    $('branch-filters').innerHTML = '';
+    return;
+  }
+  container.hidden = false;
+
+  const types = [...new Set(active.map((a) => a.build_type || 'Unknown'))].sort();
+  const branchSet = new Set(['main']);
+  for (const artifact of active) {
+    const branch = artifact.workflow_run && artifact.workflow_run.head_branch;
+    if (branch) branchSet.add(branch);
+  }
+  const branches = [...branchSet].sort((a, b) => a === 'main' ? -1 : b === 'main' ? 1 : a.localeCompare(b));
+
+  if (state.buildFilter && !types.includes(state.buildFilter)) state.buildFilter = '';
+  if (state.branchFilter && !branches.includes(state.branchFilter)) state.branchFilter = '';
+
+  $('build-filters').innerHTML =
+    '<span class="filter-label">Build</span>' +
+    chip('build', '', 'All', state.buildFilter === '') +
+    types.map((type) => chip('build', type, type, state.buildFilter === type)).join('');
+  $('branch-filters').innerHTML =
+    '<span class="filter-label">Branch</span>' +
+    chip('branch', '', 'All', state.branchFilter === '') +
+    branches.map((branch) => chip('branch', branch, branch, state.branchFilter === branch)).join('');
 }
 
 function render() {
   const term = $('filter').value.trim().toLowerCase();
-  const visible = state.artifacts.filter((a) => {
-    if (!term) return true;
+  const active = state.artifacts.filter((a) => !a.expired);
+  const visible = active.filter((a) => {
     const run = a.workflow_run || {};
-    const prText = (a.pull_requests || []).map((pr) => `#${pr.number}`).join(' ');
-    return [a.name, run.head_branch, run.head_sha, prText].some((v) => (v || '').toLowerCase().includes(term));
+    if (state.buildFilter && (a.build_type || 'Unknown') !== state.buildFilter) return false;
+    if (state.branchFilter && run.head_branch !== state.branchFilter) return false;
+    if (!term) return true;
+    const prText = (a.pull_requests || []).map((pr) => `#${pr.number} ${pr.title || ''}`).join(' ');
+    return [a.name, run.head_branch, run.head_sha, a.build_type, prText].some((v) => (v || '').toLowerCase().includes(term));
   });
+
+  renderFilters(active);
 
   $('rows').innerHTML = visible.map((a) => {
     const run = a.workflow_run || {};
@@ -74,35 +113,43 @@ function render() {
     const runLink = run.id ? `<a class="mono" href="https://github.com/${esc(state.repo)}/actions/runs/${run.id}" target="_blank" rel="noopener">#${run.id}</a>` : '<span class="muted">n/a</span>';
     const shaLink = shortSha && run.id ? `<a class="mono" href="https://github.com/${esc(state.repo)}/commit/${esc(run.head_sha)}" target="_blank" rel="noopener">${esc(shortSha)}</a>` : `<span class="mono muted">${esc(shortSha)}</span>`;
     const prs = (a.pull_requests || []).filter(Boolean);
-    const prCell = prs.length
-      ? prs.map((pr) => `<a class="mono" href="https://github.com/${esc(state.repo)}/pull/${pr.number}" target="_blank" rel="noopener">#${pr.number}</a>`).join(', ')
-      : '<span class="muted">-</span>';
+    const prLine = prs.length
+      ? `<div class="pr-line">${prs.map((pr) => {
+          const label = pr.title ? `PR #${pr.number} \u00b7 ${esc(pr.title)}` : `PR #${pr.number}`;
+          return `<a href="https://github.com/${esc(state.repo)}/pull/${pr.number}" target="_blank" rel="noopener">${label}</a>`;
+        }).join('<br>')}</div>`
+      : '';
     const url = downloadUrl(a);
-    const download = url
-      ? `<a class="btn small" href="${esc(url)}">Download</a>`
-      : `<span class="btn small disabled">Expired</span>`;
-    const name = esc(a.name);
     return `
       <tr>
-        <td><div class="name">${a.expired ? `<span class="expired">${name}</span>` : name}</div>
-            <div class="muted mono">${run.id ? `run ${runLink}${shortSha ? ' \u00b7 ' + shaLink : ''}` : 'run n/a'}</div></td>
-        <td>${run.head_branch ? `<a href="https://github.com/${esc(state.repo)}/tree/${esc(run.head_branch)}" target="_blank" rel="noopener">${esc(run.head_branch)}</a>` : '<span class="muted">n/a</span>'}</td>
-        <td>${prCell}</td>
-        <td>${shaLink}</td>
-        <td class="muted">${esc(fmtBytes(a.size_in_bytes))}</td>
-        <td class="muted">${esc(fmtDate(a.created_at))}</td>
-        <td class="${a.expired ? 'expired' : 'muted'}">${esc(fmtDate(a.expires_at))}</td>
-        <td>
+        <td class="artifact-cell" data-label="Artifact">
+          <div class="name">${esc(a.name)}</div>
+          <div class="muted mono">${run.id ? `run ${runLink}${shortSha ? ' \u00b7 ' + shaLink : ''}` : 'run n/a'}</div>
+          ${prLine}
+        </td>
+        <td data-label="Branch">${run.head_branch ? `<a href="https://github.com/${esc(state.repo)}/tree/${esc(run.head_branch)}" target="_blank" rel="noopener">${esc(run.head_branch)}</a>` : '<span class="muted">n/a</span>'}</td>
+        <td class="muted" data-label="Size">${esc(fmtBytes(a.size_in_bytes))}</td>
+        <td class="muted" data-label="Created">${esc(fmtDate(a.created_at))}</td>
+        <td class="muted" data-label="Expires">${esc(fmtDate(a.expires_at))}</td>
+        <td class="actions-cell">
           <div class="actions">
-            <button class="small" type="button" data-copy="${esc(url)}" title="Copy download link" ${url ? '' : 'disabled'}>Copy link</button>
-            ${download}
+            <button class="small" type="button" data-copy="${esc(url)}" title="Copy download link">Copy link</button>
+            <a class="btn small" href="${esc(url)}">Download</a>
           </div>
         </td>
       </tr>`;
   }).join('');
 
-  $('empty').hidden = visible.length !== 0;
-  $('filter').disabled = state.artifacts.length === 0;
+  const empty = $('empty');
+  empty.hidden = state.error || visible.length !== 0;
+  empty.textContent = active.length === 0 ? 'No artifacts available.' : 'No artifacts match the current filters.';
+  $('filter').disabled = active.length === 0;
+
+  if (!state.error) {
+    setStatus(visible.length === active.length
+      ? `${active.length} artifact${active.length === 1 ? '' : 's'}`
+      : `${visible.length} of ${active.length} artifacts`);
+  }
 }
 
 async function load() {
@@ -119,6 +166,9 @@ async function load() {
   }
 
   state.repo = repo;
+  state.error = false;
+  state.buildFilter = '';
+  state.branchFilter = '';
   $('repo').value = repo;
   setStatus('Loading...');
   $('empty').hidden = true;
@@ -128,11 +178,10 @@ async function load() {
 
   try {
     state.artifacts = await fetchArtifacts(repo);
-    const active = state.artifacts.filter((a) => !a.expired).length;
-    setStatus(`${state.artifacts.length} artifact${state.artifacts.length === 1 ? '' : 's'} (${active} active)`);
     render();
   } catch (error) {
     state.artifacts = [];
+    state.error = true;
     render();
     setStatus(error.message, true);
   }
@@ -144,6 +193,15 @@ $('controls').addEventListener('submit', (event) => {
 });
 
 $('filter').addEventListener('input', render);
+
+$('filters').addEventListener('click', (event) => {
+  const button = event.target.closest('button.chip');
+  if (!button) return;
+  if (button.dataset.kind === 'build') state.buildFilter = button.dataset.value;
+  else if (button.dataset.kind === 'branch') state.branchFilter = button.dataset.value;
+  else return;
+  render();
+});
 
 $('rows').addEventListener('click', async (event) => {
   const button = event.target.closest('button[data-copy]');
