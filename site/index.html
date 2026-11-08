@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' https://*.workers.dev; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
+<title>UberStrike Artifacts</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header>
+  <div class="header-inner">
+    <div class="brand">
+      <div class="brand-text">
+        <h1>UberStrike Artifacts</h1>
+      </div>
+    </div>
+    <form id="controls">
+      <label>Repository
+        <input id="repo" type="text" value="TeamUberStrike/uber-client-4-3-8" spellcheck="false" autocomplete="off">
+      </label>
+      <label class="inline"><input id="remember" type="checkbox" checked> remember</label>
+      <button class="primary" type="submit">Load</button>
+    </form>
+  </div>
+</header>
+<div class="toolbar">
+  <input id="filter" type="search" placeholder="Filter by name, branch, PR, or commit..." disabled>
+  <span id="status"></span>
+</div>
+<div id="filters" class="filters" hidden>
+  <div class="filter-group" id="build-filters"></div>
+  <div class="filter-group" id="branch-filters"></div>
+</div>
+<main>
+  <div class="table-card">
+    <table>
+      <thead>
+        <tr>
+          <th>Artifact</th>
+          <th>Size</th>
+          <th>Created</th>
+          <th>Expires</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div id="empty" class="empty" hidden>
+      <svg width="40" height="40" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8.878.392a1.75 1.75 0 0 0-1.756 0l-5.25 3.045A1.75 1.75 0 0 0 1 4.951v6.098c0 .624.332 1.2.872 1.514l5.25 3.045a1.75 1.75 0 0 0 1.756 0l5.25-3.045c.54-.313.872-.89.872-1.514V4.951c0-.624-.332-1.2-.872-1.514L8.878.392ZM7.875 1.69l5.63 3.263L8 8.243 2.495 4.953l5.38-3.263ZM2.5 6.434v4.605c0 .174.098.34.25.428L8 14.55l5.25-3.083a.5.5 0 0 0 .25-.428V6.435l-5.5 3.19-5.5-3.19Z"/></svg>
+      <p id="empty-text">No artifacts available.</p>
+    </div>
+  </div>
+</main>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

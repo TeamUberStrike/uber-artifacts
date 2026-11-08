@@ -1,0 +1,7 @@
+name = "uber-artifacts-proxy"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+[vars]
+ALLOWED_REPOS = "TeamUberStrike/uber-client-4-3-8"
+ALLOWED_ORIGINS = "https://artifacts.uberstrike.com,http://artifacts.uberstrike.com,https://teamuberstrike.github.io,http://127.0.0.1:8788,http://localhost:8788"
