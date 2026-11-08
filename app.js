@@ -3,6 +3,7 @@ const proxyBase = String(config.proxyBase || '').replace(/\/+$/, '');
 const defaultRepo = config.defaultRepo || 'TeamUberStrike/uber-client-4-3-8';
 const $ = (id) => document.getElementById(id);
 const state = { repo: '', artifacts: [], buildFilter: '', branchFilter: '', error: false };
+const downloadIcon = '<svg class="dl-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor" aria-hidden="true"><path d="M7.47 10.78a.75.75 0 0 0 1.06 0l3.75-3.75a.75.75 0 0 0-1.06-1.06L8.75 8.44V1.75a.75.75 0 0 0-1.5 0v6.69L4.78 5.97a.75.75 0 0 0-1.06 1.06l3.75 3.75ZM3.75 13a.75.75 0 0 0 0 1.5h8.5a.75.75 0 0 0 0-1.5h-8.5Z"/></svg>';
 
 function fmtBytes(bytes) {
   if (!Number.isFinite(bytes)) return '';
@@ -135,7 +136,7 @@ function render() {
     return `
       <tr>
         <td class="artifact-cell" data-label="Artifact">
-          <div class="name"><a href="${esc(url)}" title="Download artifact">${esc(a.name)}</a> <span class="badge">${esc(a.build_type || 'Unknown')}</span></div>
+          <div class="name"><a href="${esc(url)}" title="Download artifact">${esc(a.name)}${downloadIcon}</a> <span class="badge badge-${esc((a.build_type || 'Unknown').toLowerCase())}">${esc(a.build_type || 'Unknown')}</span></div>
           <div class="meta-line">${metaLine}</div>
           ${prLine}
         </td>
@@ -147,7 +148,7 @@ function render() {
 
   const empty = $('empty');
   empty.hidden = state.error || visible.length !== 0;
-  empty.textContent = active.length === 0 ? 'No artifacts available.' : 'No artifacts match the current filters.';
+  $('empty-text').textContent = active.length === 0 ? 'No artifacts available.' : 'No artifacts match the current filters.';
   $('filter').disabled = active.length === 0;
 
   if (!state.error) {
