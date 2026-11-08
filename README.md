@@ -18,8 +18,18 @@ The GitHub token lives only in the Worker as a secret and is used only for downl
    - Repository access: only `uber-client-4-3-8`
    - Permissions: `Actions: Read-only` and `Metadata: Read-only`
 3. Deploy the Worker proxy to Cloudflare (see [Deploying the Worker to Cloudflare](#deploying-the-worker-to-cloudflare)).
-4. Set the deployed Worker URL as a repository Actions variable named `ARTIFACTS_PROXY_URL` (Settings -> Secrets and variables -> Actions -> Variables). The Pages workflow injects it into `site/config.js` during deployment. Alternatively, put the Worker URL in `site/config.js` directly as `proxyBase` and commit it.
-5. Enable Pages: repository Settings -> Pages -> Source: GitHub Actions, then push to `main`. The workflow in `.github/workflows/pages.yml` deploys `site/` on every push to `main`.
+4. Set `proxyBase` in `site/config.js` to the deployed Worker URL.
+5. Enable Pages as a branch deployment from `gh-pages` (see [Deploying the site](#deploying-the-site)).
+
+## Deploying the site
+
+The site is deployed with GitHub Pages as a branch deployment from `gh-pages` (repository Settings -> Pages -> Source: Deploy from a branch -> branch `gh-pages`, folder `/`).
+
+1. Put the contents of `site/` at the root of `gh-pages`, with the real Worker URL baked into `site/config.js` as `proxyBase`.
+2. Include a `CNAME` file containing `artifacts.uberstrike.com` and an empty `.nojekyll`.
+3. Push `gh-pages`; GitHub Pages rebuilds automatically.
+
+Alternatively, `.github/workflows/pages.yml` deploys `site/` from `main` using GitHub Actions (Pages -> Source: GitHub Actions). With that setup, leave the `YOUR-SUBDOMAIN` placeholder in `site/config.js` and set the Worker URL as an Actions variable named `ARTIFACTS_PROXY_URL` instead of editing `config.js`.
 
 ## Deploying the Worker to Cloudflare
 
@@ -57,7 +67,7 @@ The Worker is now live at `https://uber-artifacts-proxy.<your-subdomain>.workers
 
 ## Custom domain
 
-The Pages site is configured for `artifacts.uberstrike.com`. GitHub Pages with a custom Actions workflow ignores `CNAME` files, so the domain is stored in the repository Pages settings (already applied via the API).
+The Pages site is configured for `artifacts.uberstrike.com`. With a branch deployment GitHub Pages reads the `CNAME` file in `gh-pages` (already present); the domain is also stored in the repository Pages settings.
 
 1. In the Cloudflare DNS dashboard for `uberstrike.com`, create:
 
@@ -86,7 +96,7 @@ npx wrangler dev
 python3 -m http.server 8080 -d site
 ```
 
-The site CSP only allows `https://*.workers.dev` by default. For local testing against `http://127.0.0.1:8787`, temporarily add `http://127.0.0.1:8787` to the `connect-src` directive in `site/index.html`.
+The site CSP allows `https://*.workers.dev` (downloads) and `https://api.github.com` (listing) by default. For local download testing against `http://127.0.0.1:8787`, temporarily add `http://127.0.0.1:8787` to the `connect-src` directive in `site/index.html`.
 
 ## Endpoints
 
