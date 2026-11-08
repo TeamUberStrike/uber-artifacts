@@ -107,7 +107,7 @@ The site CSP allows `https://*.workers.dev` (the Worker serves both listing and 
 - `GET /api/artifacts/:owner/:repo` - artifact list with build type, branch, commit, run, and pull request title metadata
 - `GET /download/:owner/:repo/:artifactId` - streams the artifact zip (`HEAD` supported)
 
-## FAQ
+## Behavior and limits
 
 ### Why so many GitHub requests?
 
