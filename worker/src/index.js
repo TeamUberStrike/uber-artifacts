@@ -286,6 +286,17 @@ async function buildArtifactList(repo, env) {
   });
 }
 
+async function cacheList(repo, artifacts) {
+  const cache = typeof caches !== 'undefined' ? caches.default : null;
+  if (!cache) return;
+  const cacheKey = `https://artifacts-proxy.invalid/list/${repo.toLowerCase()}`;
+  const cacheable = new Response(JSON.stringify({ repo, artifacts }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': `public, max-age=${CACHE_TTL_SECONDS}` }
+  });
+  await cache.put(cacheKey, cacheable);
+}
+
 async function listHandler(request, env, ctx, repo) {
   if (!isAllowed(repo, env)) {
     throw new HttpError(403, 'Repository is not allowed by this proxy');
@@ -309,13 +320,7 @@ async function listHandler(request, env, ctx, repo) {
   const artifacts = await buildArtifactList(repo, env);
   const response = jsonResponse(request, env, { repo, artifacts }, 200, CACHE_TTL_SECONDS);
 
-  if (cache) {
-    const cacheable = new Response(JSON.stringify({ repo, artifacts }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': `public, max-age=${CACHE_TTL_SECONDS}` }
-    });
-    if (ctx && ctx.waitUntil) ctx.waitUntil(cache.put(cacheKey, cacheable));
-  }
+  if (ctx && ctx.waitUntil) ctx.waitUntil(cacheList(repo, artifacts));
 
   return response;
 }

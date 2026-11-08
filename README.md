@@ -114,7 +114,7 @@ The site CSP allows `https://*.workers.dev` (downloads) and `https://api.github.
 - The fine-grained token allows 5,000 requests/hour: even one cache miss per minute (2,880 calls/hour worst case) stays far below the limit, so visitors never hit a rate limit.
 - Up to 500 artifacts are listed (5 pages of 100). Expired artifacts are excluded.
 - Build types are detected from workflow run names and job/step names (Windows, Android, iOS, Linux, macOS, WebGL).
-- The site auto-refreshes every 60 seconds (matching the cache TTL), so deleted or expired artifacts disappear within a minute. Download links clicked after deletion return `404`/`410` immediately.
+- The list cache renews lazily: the first request after the 60-second TTL expires triggers a fresh GitHub fetch, so deleted or expired artifacts disappear within a minute. Download links clicked after deletion return `404`/`410` immediately.
 - Rate limiting per IP: 30 list requests and 10 download requests per minute; exceeding returns `429` with `Retry-After`.
 - Cloudflare Workers Free plan: 100,000 requests/day, 10 ms CPU per request; downloads are streamed and have no enforced response body limit.
 - The download endpoint returns `410` for an expired artifact.
