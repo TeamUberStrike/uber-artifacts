@@ -1,14 +1,14 @@
 # UberStrike Artifacts
 
-A static dashboard that lists GitHub Actions artifacts straight from the public GitHub API, plus a Cloudflare Worker that streams downloads without a GitHub account.
+A static dashboard plus a Cloudflare Worker that lists GitHub Actions artifacts and streams downloads without a GitHub account.
 
 ```
 Browser (GitHub Pages / Cloudflare Pages)
-  |-- GET api.github.com/repos/...     --> artifact list + metadata (public, no token)
+  |-- GET /api/artifacts/:owner/:repo  --> Worker --> GitHub REST (list, runs, jobs) + GraphQL (PR titles)
   |-- GET /download/:owner/:repo/:id   --> Worker --> GitHub API --> signed blob (streamed)
 ```
 
-The GitHub token lives only in the Worker as a secret and is used only for downloads. The static site contains no credentials.
+The GitHub token lives only in the Worker as a secret. The static site contains no credentials. List responses are cached for 60 seconds at Cloudflare's edge and in the Worker cache, so GitHub is only queried once per minute at most.
 
 ## Setup
 
@@ -53,7 +53,10 @@ npx wrangler secret put GITHUB_TOKEN
 ```toml
 [vars]
 ALLOWED_REPOS = "TeamUberStrike/uber-client-4-3-8"
+ALLOWED_ORIGINS = "*"
 ```
+
+`ALLOWED_ORIGINS` controls CORS for the list endpoint. The list data is public, so `*` is safe; set explicit origins to restrict which sites may read it.
 
 4. Deploy:
 
@@ -101,15 +104,17 @@ The site CSP allows `https://*.workers.dev` (downloads) and `https://api.github.
 ## Endpoints
 
 - `GET /health`
+- `GET /api/artifacts/:owner/:repo` - artifact list with build type, branch, commit, run, and pull request title metadata
 - `GET /download/:owner/:repo/:artifactId` - streams the artifact zip (`HEAD` supported)
-
-The artifact list and its metadata are fetched client-side from the GitHub API; no Worker endpoint is involved.
 
 ## Behavior and limits
 
-- Listing and metadata (build type, branch, commit, PR number and title) are fetched directly from `api.github.com` in the browser. One page load costs roughly `1 + 2 x distinct runs + PRs` API requests. Anonymous GitHub API rate limit: 60 requests/hour per IP.
+- List responses are cached for 60 seconds (Cloudflare edge + Worker Cache API). GitHub is only called on a cache miss, so at most ~1 list build per minute.
+- Each list build costs up to 5 artifact pages + 2 run pages + 20 job lists + 1 batched GraphQL request for PR titles (up to 100 titles in one call, REST fallback if the token cannot use GraphQL). Worst case ~48 GitHub API calls per cache miss.
+- The fine-grained token allows 5,000 requests/hour: even one cache miss per minute (2,880 calls/hour worst case) stays far below the limit, so visitors never hit a rate limit.
 - Up to 500 artifacts are listed (5 pages of 100). Expired artifacts are excluded.
-- Build types are detected from workflow job and step names (Windows, Android, iOS, Linux, macOS, WebGL).
+- Build types are detected from workflow run names and job/step names (Windows, Android, iOS, Linux, macOS, WebGL).
+- Rate limiting per IP: 30 list requests and 10 download requests per minute; exceeding returns `429` with `Retry-After`.
 - Cloudflare Workers Free plan: 100,000 requests/day, 10 ms CPU per request; downloads are streamed and have no enforced response body limit.
 - The download endpoint returns `410` for an expired artifact.
 
@@ -118,5 +123,6 @@ The artifact list and its metadata are fetched client-side from the GitHub API; 
 - Never commit a token into `site/` or any other file.
 - Keep `ALLOWED_REPOS` minimal, even though the token is already repo-scoped.
 - The token never reaches the browser; download links do not contain credentials.
-- The site CSP restricts scripts to same-origin files and network access to `*.workers.dev` and `https://api.github.com`. Update `connect-src` if you attach a custom domain to the Worker.
-- Consider Cloudflare rate limiting or WAF rules if the download endpoint gets abused.
+- Per-IP rate limits (30 list/min, 10 downloads/min) return `429`. The 60-second edge cache absorbs repeated list requests without touching the Worker or GitHub.
+- For hard anti-abuse protection, add a Cloudflare WAF rate-limiting rule (e.g. on a custom domain attached to the Worker) and/or enable Bot Fight Mode.
+- The site CSP restricts scripts to same-origin files and network access to `*.workers.dev`. Update `connect-src` if you attach a custom domain to the Worker.

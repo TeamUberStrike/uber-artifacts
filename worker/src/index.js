@@ -1,4 +1,18 @@
 const GITHUB_API = 'https://api.github.com';
+const PAGE_SIZE = 100;
+const MAX_ARTIFACT_PAGES = 5;
+const MAX_RUN_LIST_PAGES = 2;
+const MAX_JOB_LOOKUPS = 20;
+const MAX_PR_TITLE_LOOKUPS = 100;
+const CACHE_TTL_SECONDS = 60;
+const BUILD_TYPES = [
+  ['Windows', ['windows', 'win64', 'win32', 'standalonewindows']],
+  ['Android', ['android']],
+  ['iOS', ['ios', 'iphone', 'ipad']],
+  ['Linux', ['linux', 'standalonelinux']],
+  ['macOS', ['macos', 'osx', 'mac os', 'standalonemacos']],
+  ['WebGL', ['webgl']]
+];
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -18,18 +32,51 @@ function isAllowed(repo, env) {
   return allowlist(env).includes(repo.toLowerCase());
 }
 
-function baseHeaders(contentType) {
+function allowedOrigin(request, env) {
+  const origin = request.headers.get('Origin');
+  const configured = (env.ALLOWED_ORIGINS || '*')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (configured.includes('*')) return '*';
+  if (origin && configured.includes(origin)) return origin;
+  return '';
+}
+
+function corsHeaders(request, env) {
   const headers = new Headers();
+  const origin = allowedOrigin(request, env);
+  if (origin) {
+    headers.set('Access-Control-Allow-Origin', origin);
+    if (origin !== '*') headers.set('Vary', 'Origin');
+  }
+  return headers;
+}
+
+function baseHeaders(request, env, contentType) {
+  const headers = corsHeaders(request, env);
   if (contentType) headers.set('Content-Type', contentType);
   headers.set('X-Content-Type-Options', 'nosniff');
   headers.set('Referrer-Policy', 'no-referrer');
   return headers;
 }
 
-function jsonResponse(body, status = 200) {
-  const headers = baseHeaders('application/json; charset=utf-8');
-  headers.set('Cache-Control', 'no-store');
+function jsonResponse(request, env, body, status = 200, cacheSeconds = 0, extraHeaders = {}) {
+  const headers = baseHeaders(request, env, 'application/json; charset=utf-8');
+  headers.set('Cache-Control', cacheSeconds > 0 ? `public, max-age=${cacheSeconds}` : 'no-store');
+  for (const [name, value] of Object.entries(extraHeaders)) headers.set(name, value);
+  if (request.method === 'HEAD') {
+    return new Response(null, { status, headers });
+  }
   return new Response(JSON.stringify(body), { status, headers });
+}
+
+function preflight(request, env) {
+  const headers = baseHeaders(request, env);
+  headers.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+  headers.set('Access-Control-Allow-Headers', 'Accept, Content-Type');
+  headers.set('Access-Control-Max-Age', '86400');
+  return new Response(null, { status: 204, headers });
 }
 
 function githubHeaders(env, accept = 'application/vnd.github+json') {
@@ -58,6 +105,221 @@ async function githubErrorMessage(response, action) {
   return `GitHub API failed to ${action} (${response.status})${detail}`;
 }
 
+function clientIp(request) {
+  const forwarded = request.headers.get('CF-Connecting-IP');
+  if (forwarded) return forwarded;
+  const real = request.headers.get('X-Forwarded-For');
+  if (real) return real.split(',')[0].trim();
+  return 'unknown';
+}
+
+function makeRateLimiter(max, windowMs) {
+  const hits = new Map();
+  return {
+    check(ip) {
+      const now = Date.now();
+      const recent = (hits.get(ip) || []).filter((t) => now - t < windowMs);
+      recent.push(now);
+      hits.set(ip, recent);
+      if (hits.size > 20000) {
+        for (const [key, stamps] of hits) {
+          if (now - stamps[stamps.length - 1] > windowMs) hits.delete(key);
+        }
+      }
+      return recent.length <= max;
+    }
+  };
+}
+
+const listLimiter = makeRateLimiter(30, 60 * 1000);
+const downloadLimiter = makeRateLimiter(10, 60 * 1000);
+
+function detectBuildType(values) {
+  for (const value of values) {
+    const text = (value || '').toLowerCase();
+    if (!text) continue;
+    for (const [name, aliases] of BUILD_TYPES) {
+      if (aliases.some((alias) => text.includes(alias))) return name;
+    }
+  }
+  return '';
+}
+
+function extractBuildHash(name) {
+  const match = /([0-9a-f]{40})$/i.exec(name || '');
+  return match ? match[1].toLowerCase() : '';
+}
+
+function isSafeRepoPart(value) {
+  return /^[\w.-]+$/.test(value || '');
+}
+
+async function fetchPullRequestTitles(env, owner, name, numbers) {
+  if (!numbers.length) return { titles: new Map(), graphqlOk: true };
+  const aliases = numbers.map((number) => `p${number}: pullRequest(number: ${number}) { title }`).join('\n');
+  const query = `query { repository(owner: "${owner}", name: "${name}") { ${aliases} } }`;
+  const response = await fetch(`${GITHUB_API}/graphql`, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      'User-Agent': 'uber-artifacts-proxy',
+      Authorization: `Bearer ${env.GITHUB_TOKEN}`
+    },
+    body: JSON.stringify({ query })
+  });
+  if (!response.ok) return { titles: new Map(), graphqlOk: false };
+  const data = await response.json();
+  const titles = new Map();
+  const nodes = (data && data.data && data.data.repository) || {};
+  for (const number of numbers) {
+    const node = nodes[`p${number}`];
+    if (node && typeof node.title === 'string') titles.set(number, node.title);
+  }
+  return { titles, graphqlOk: true };
+}
+
+async function fetchPullRequestTitlesRest(env, repo, numbers) {
+  const titles = new Map();
+  const targets = numbers.slice(0, 20);
+  await Promise.all(targets.map(async (number) => {
+    try {
+      const response = await githubFetch(env, `/repos/${repo}/pulls/${number}`);
+      if (!response.ok) return;
+      const pullRequest = await response.json();
+      titles.set(number, pullRequest.title || '');
+    } catch {}
+  }));
+  return titles;
+}
+
+async function buildArtifactList(repo, env) {
+  const artifacts = [];
+  for (let page = 1; page <= MAX_ARTIFACT_PAGES; page++) {
+    const response = await githubFetch(env, `/repos/${repo}/actions/artifacts?per_page=${PAGE_SIZE}&page=${page}`);
+    if (!response.ok) {
+      throw new HttpError(response.status, await githubErrorMessage(response, 'list artifacts'));
+    }
+    const data = await response.json();
+    const pageArtifacts = data.artifacts || [];
+    artifacts.push(...pageArtifacts);
+    if (pageArtifacts.length < PAGE_SIZE) break;
+  }
+
+  const active = artifacts.filter((artifact) => !artifact.expired);
+  active.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+  const runs = new Map();
+  for (let page = 1; page <= MAX_RUN_LIST_PAGES; page++) {
+    const response = await githubFetch(env, `/repos/${repo}/actions/runs?per_page=${PAGE_SIZE}&page=${page}`);
+    if (!response.ok) break;
+    const data = await response.json();
+    const workflowRuns = data.workflow_runs || [];
+    for (const run of workflowRuns) {
+      if (!runs.has(run.id)) {
+        runs.set(run.id, {
+          name: run.name,
+          displayTitle: run.display_title,
+          pullRequests: (run.pull_requests || []).map((pr) => pr.number).filter(Boolean)
+        });
+      }
+    }
+    if (workflowRuns.length < PAGE_SIZE) break;
+  }
+
+  const runIds = [...new Set(active.map((artifact) => artifact.workflow_run && artifact.workflow_run.id).filter(Boolean))];
+  const buildTypes = new Map();
+  const needJobs = [];
+  for (const id of runIds) {
+    const info = runs.get(id);
+    const candidates = info ? [info.name, info.displayTitle] : [];
+    const detected = detectBuildType(candidates);
+    if (detected) buildTypes.set(id, detected);
+    else needJobs.push(id);
+  }
+
+  await Promise.all(needJobs.slice(0, MAX_JOB_LOOKUPS).map(async (id) => {
+    try {
+      const response = await githubFetch(env, `/repos/${repo}/actions/runs/${id}/jobs?per_page=${PAGE_SIZE}`);
+      if (!response.ok) return;
+      const data = await response.json();
+      const candidates = [];
+      for (const job of data.jobs || []) {
+        candidates.push(job.name);
+        for (const step of job.steps || []) candidates.push(step.name);
+      }
+      buildTypes.set(id, detectBuildType(candidates));
+    } catch {}
+  }));
+
+  const [owner, name] = repo.split('/');
+  const prNumbers = [...new Set(runIds.flatMap((id) => (runs.get(id) ? runs.get(id).pullRequests : [])))];
+  let titles = new Map();
+  if (prNumbers.length && isSafeRepoPart(owner) && isSafeRepoPart(name)) {
+    const limited = prNumbers.slice(0, MAX_PR_TITLE_LOOKUPS);
+    const result = await fetchPullRequestTitles(env, owner, name, limited);
+    titles = result.titles;
+    if (!result.graphqlOk) {
+      titles = await fetchPullRequestTitlesRest(env, repo, limited);
+    }
+  }
+
+  return active.map((artifact) => {
+    const run = artifact.workflow_run || {};
+    const info = runs.get(run.id) || {};
+    return {
+      id: artifact.id,
+      name: artifact.name,
+      size_in_bytes: artifact.size_in_bytes,
+      created_at: artifact.created_at,
+      expires_at: artifact.expires_at,
+      expired: artifact.expired,
+      build_type: buildTypes.get(run.id) || 'Unknown',
+      build_hash: extractBuildHash(artifact.name),
+      workflow_run: run.id ? {
+        id: run.id,
+        head_branch: run.head_branch || '',
+        head_sha: run.head_sha || ''
+      } : null,
+      pull_requests: (info.pullRequests || []).map((number) => ({ number, title: titles.get(number) || '' }))
+    };
+  });
+}
+
+async function listHandler(request, env, ctx, repo) {
+  if (!isAllowed(repo, env)) {
+    throw new HttpError(403, 'Repository is not allowed by this proxy');
+  }
+  if (!listLimiter.check(clientIp(request))) {
+    const response = jsonResponse(request, env, { error: 'Too many list requests, slow down' }, 429, 0, { 'Retry-After': '60' });
+    return response;
+  }
+
+  const cache = typeof caches !== 'undefined' ? caches.default : null;
+  const cacheKey = `https://artifacts-proxy.invalid/list/${repo.toLowerCase()}`;
+  if (cache) {
+    const cached = await cache.match(cacheKey);
+    if (cached) {
+      const headers = new Headers(cached.headers);
+      for (const [name, value] of corsHeaders(request, env)) headers.set(name, value);
+      return new Response(request.method === 'HEAD' ? null : cached.body, { status: cached.status, headers });
+    }
+  }
+
+  const artifacts = await buildArtifactList(repo, env);
+  const response = jsonResponse(request, env, { repo, artifacts }, 200, CACHE_TTL_SECONDS);
+
+  if (cache) {
+    const cacheable = new Response(JSON.stringify({ repo, artifacts }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': `public, max-age=${CACHE_TTL_SECONDS}` }
+    });
+    if (ctx && ctx.waitUntil) ctx.waitUntil(cache.put(cacheKey, cacheable));
+  }
+
+  return response;
+}
+
 function contentDisposition(name) {
   const raw = (name || 'artifact').replace(/\.zip$/i, '') || 'artifact';
   const ascii = raw.replace(/[^\w.\- ]+/g, '_').slice(0, 120) || 'artifact';
@@ -71,6 +333,10 @@ async function downloadHandler(request, env, repo, artifactId) {
   }
   if (!/^\d+$/.test(artifactId)) {
     throw new HttpError(400, 'Invalid artifact id');
+  }
+  if (!downloadLimiter.check(clientIp(request))) {
+    const response = jsonResponse(request, env, { error: 'Too many download requests, slow down' }, 429, 0, { 'Retry-After': '60' });
+    return response;
   }
 
   const metaResponse = await githubFetch(env, `/repos/${repo}/actions/artifacts/${artifactId}`);
@@ -101,7 +367,7 @@ async function downloadHandler(request, env, repo, artifactId) {
     throw new HttpError(502, `GitHub download failed (${zipResponse.status})`);
   }
 
-  const headers = baseHeaders('application/zip');
+  const headers = baseHeaders(request, env, 'application/zip');
   headers.set('Content-Disposition', contentDisposition(artifact.name));
   headers.set('Cache-Control', 'no-store');
   const length = zipResponse.headers.get('Content-Length');
@@ -114,8 +380,9 @@ async function downloadHandler(request, env, repo, artifactId) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     try {
+      if (request.method === 'OPTIONS') return preflight(request, env);
       if (request.method !== 'GET' && request.method !== 'HEAD') {
         throw new HttpError(405, 'Method not allowed');
       }
@@ -124,7 +391,12 @@ export default {
       const parts = url.pathname.split('/').filter(Boolean);
 
       if (parts.length === 1 && parts[0] === 'health') {
-        return jsonResponse({ ok: true });
+        return jsonResponse(request, env, { ok: true });
+      }
+
+      if (parts[0] === 'api' && parts[1] === 'artifacts' && parts.length === 4) {
+        const repo = `${parts[2]}/${parts[3]}`;
+        return await listHandler(request, env, ctx, repo);
       }
 
       if (parts[0] === 'download' && parts.length === 4) {
@@ -137,7 +409,7 @@ export default {
       const status = error instanceof HttpError ? error.status : 500;
       const message = error instanceof HttpError ? error.message : 'Internal proxy error';
       if (status >= 500 && !(error instanceof HttpError)) console.error(error);
-      return jsonResponse({ error: message }, status);
+      return jsonResponse(request, env, { error: message }, status);
     }
   }
 };
