@@ -1,14 +1,14 @@
 # UberStrike Artifacts
 
-A static dashboard plus a Cloudflare Worker proxy that lists GitHub Actions artifacts and lets anyone download them without a GitHub account.
+A static dashboard that lists GitHub Actions artifacts straight from the public GitHub API, plus a Cloudflare Worker that streams downloads without a GitHub account.
 
 ```
 Browser (GitHub Pages / Cloudflare Pages)
-  |-- GET /api/artifacts/:owner/:repo  --> Worker --> GitHub API (server-side token)
+  |-- GET api.github.com/repos/...     --> artifact list + metadata (public, no token)
   |-- GET /download/:owner/:repo/:id   --> Worker --> GitHub API --> signed blob (streamed)
 ```
 
-The GitHub token lives only in the Worker as a secret. The static site contains no credentials.
+The GitHub token lives only in the Worker as a secret and is used only for downloads. The static site contains no credentials.
 
 ## Setup
 
@@ -43,7 +43,6 @@ npx wrangler secret put GITHUB_TOKEN
 ```toml
 [vars]
 ALLOWED_REPOS = "TeamUberStrike/uber-client-4-3-8"
-ALLOWED_ORIGINS = "https://teamuberstrike.github.io"
 ```
 
 4. Deploy:
@@ -54,7 +53,7 @@ npx wrangler deploy
 
 The Worker is now live at `https://uber-artifacts-proxy.<your-subdomain>.workers.dev`. Redeploy after changing variables.
 
-5. (Optional) attach a custom domain to the Worker (e.g. `proxy.uberstrike.com`), then add it to `ALLOWED_ORIGINS` and to the `connect-src` directive of the site CSP in `site/index.html`.
+5. (Optional) attach a custom domain to the Worker (e.g. `proxy.uberstrike.com`), then add it to the `connect-src` directive of the site CSP in `site/index.html`.
 
 ## Custom domain
 
@@ -72,7 +71,6 @@ Proxy: DNS only (grey cloud)
 The record must not be proxied; GitHub needs to see the DNS record directly to verify the domain and issue the TLS certificate.
 
 2. Wait for GitHub to verify the domain and provision HTTPS, then enable "Enforce HTTPS" in Settings -> Pages.
-3. Keep `ALLOWED_ORIGINS` in `worker/wrangler.toml` in sync with the site origin(s).
 
 ## Deploying the site to Cloudflare Pages instead
 
@@ -93,23 +91,22 @@ The site CSP only allows `https://*.workers.dev` by default. For local testing a
 ## Endpoints
 
 - `GET /health`
-- `GET /api/artifacts/:owner/:repo` - artifact list with build type, branch, commit, run, and pull request title metadata
 - `GET /download/:owner/:repo/:artifactId` - streams the artifact zip (`HEAD` supported)
+
+The artifact list and its metadata are fetched client-side from the GitHub API; no Worker endpoint is involved.
 
 ## Behavior and limits
 
-- Artifact lists are not cached; every request fetches fresh data from GitHub (`Cache-Control: no-store`), so deletions appear immediately.
-- Up to 500 artifacts are listed (5 pages of 100).
+- Listing and metadata (build type, branch, commit, PR number and title) are fetched directly from `api.github.com` in the browser. Anonymous GitHub API rate limit: 60 requests/hour per IP.
+- Up to 500 artifacts are listed (5 pages of 100). Expired artifacts are excluded.
 - Build types are detected from workflow job and step names (Windows, Android, iOS, Linux, macOS, WebGL).
-- Run details (build type, branch, commit, PR number and title) are resolved for up to 15 distinct runs, 15 job lists, and 10 pull requests per list request. Together with up to 5 artifact-list pages that is at most 45 GitHub API calls, under the Workers Free plan limit of 50 subrequests per request. Artifacts beyond the first 15 runs are still listed (name, size, dates), just without run/branch/PR details.
 - Cloudflare Workers Free plan: 100,000 requests/day, 10 ms CPU per request; downloads are streamed and have no enforced response body limit.
-- Expired artifacts are excluded from the list. The download endpoint also returns `410` for an expired artifact.
+- The download endpoint returns `410` for an expired artifact.
 
 ## Security notes
 
 - Never commit a token into `site/` or any other file.
 - Keep `ALLOWED_REPOS` minimal, even though the token is already repo-scoped.
-- Set `ALLOWED_ORIGINS` to the Pages origin; use `*` only if the list endpoint should be readable from any site.
 - The token never reaches the browser; download links do not contain credentials.
-- The site CSP restricts scripts to same-origin files and network access to `*.workers.dev`. Update `connect-src` if you attach a custom domain to the Worker.
+- The site CSP restricts scripts to same-origin files and network access to `*.workers.dev` and `https://api.github.com`. Update `connect-src` if you attach a custom domain to the Worker.
 - Consider Cloudflare rate limiting or WAF rules if the download endpoint gets abused.
