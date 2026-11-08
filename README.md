@@ -18,7 +18,7 @@ The GitHub token lives only in the Worker as a secret. The static site contains 
    - Repository access: only `uber-client-4-3-8`
    - Permissions: `Actions: Read-only` and `Metadata: Read-only`
 3. Deploy the Worker proxy to Cloudflare (see [Deploying the Worker to Cloudflare](#deploying-the-worker-to-cloudflare)).
-4. Set the deployed Worker URL as a repository Actions variable named `ARTIFACTS_PROXY_URL` (Settings -> Secrets and variables -> Actions -> Variables). The Pages workflow injects it into `site/config.js` during deployment. You can also edit `site/config.js` directly.
+4. Set the deployed Worker URL as a repository Actions variable named `ARTIFACTS_PROXY_URL` (Settings -> Secrets and variables -> Actions -> Variables). The Pages workflow injects it into `site/config.js` during deployment. Alternatively, put the Worker URL in `site/config.js` directly as `proxyBase` and commit it.
 5. Enable Pages: repository Settings -> Pages -> Source: GitHub Actions, then push to `main`. The workflow in `.github/workflows/pages.yml` deploys `site/` on every push to `main`.
 
 ## Deploying the Worker to Cloudflare
