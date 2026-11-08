@@ -1,10 +1,12 @@
 const GITHUB_API = 'https://api.github.com';
 const PAGE_SIZE = 100;
 const MAX_ARTIFACT_PAGES = 5;
-const MAX_RUN_LIST_PAGES = 2;
-const MAX_JOB_LOOKUPS = 20;
-const MAX_JOB_LOOKUPS_CRON = 40;
+const MAX_RUN_DETAIL_LOOKUPS = 15;
+const MAX_RUN_DETAIL_LOOKUPS_CRON = 20;
+const MAX_JOB_LOOKUPS = 15;
+const MAX_JOB_LOOKUPS_CRON = 20;
 const MAX_PR_TITLE_LOOKUPS = 100;
+const MAX_REST_TITLE_FALLBACK = 12;
 const CACHE_TTL_SECONDS = 60;
 const BUILD_TYPES = [
   ['Windows', ['windows', 'win64', 'win32', 'standalonewindows']],
@@ -180,9 +182,9 @@ async function fetchPullRequestTitles(env, owner, name, numbers) {
   return { titles, graphqlOk: true };
 }
 
-async function fetchPullRequestTitlesRest(env, repo, numbers) {
+async function fetchPullRequestTitlesRest(env, repo, numbers, cap = MAX_REST_TITLE_FALLBACK) {
   const titles = new Map();
-  const targets = numbers.slice(0, 20);
+  const targets = numbers.slice(0, cap);
   await Promise.all(targets.map(async (number) => {
     try {
       const response = await githubFetch(env, `/repos/${repo}/pulls/${number}`);
@@ -236,57 +238,50 @@ async function fetchArtifactContext(repo, env) {
   const active = artifacts.filter((artifact) => !artifact.expired);
   active.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
-  const runs = new Map();
-  for (let page = 1; page <= MAX_RUN_LIST_PAGES; page++) {
-    const response = await githubFetch(env, `/repos/${repo}/actions/runs?per_page=${PAGE_SIZE}&page=${page}`);
-    if (!response.ok) break;
-    const data = await response.json();
-    const workflowRuns = data.workflow_runs || [];
-    for (const run of workflowRuns) {
-      if (!runs.has(run.id)) {
-        runs.set(run.id, {
-          name: run.name,
-          displayTitle: run.display_title,
-          pullRequests: (run.pull_requests || []).map((pr) => pr.number).filter(Boolean)
-        });
-      }
-    }
-    if (workflowRuns.length < PAGE_SIZE) break;
-  }
-
   const runIds = [...new Set(active.map((artifact) => artifact.workflow_run && artifact.workflow_run.id).filter(Boolean))];
-  const prNumbers = [...new Set(runIds.flatMap((id) => (runs.get(id) ? runs.get(id).pullRequests : [])))];
-  return { active, runs, runIds, prNumbers };
+  return { active, runIds };
 }
 
-async function resolveMetadata(repo, env, runs, runIds, prNumbers, options = {}) {
+async function resolveMetadata(repo, env, runIds, options = {}) {
+  const maxRunDetailLookups = options.maxRunDetailLookups || MAX_RUN_DETAIL_LOOKUPS;
   const maxJobLookups = options.maxJobLookups || MAX_JOB_LOOKUPS;
   const useRestFallback = options.useRestFallback !== false;
-  const buildTypes = new Map();
-  const needJobs = [];
+
+  const runInfo = new Map();
+  const needDetail = [];
   await Promise.all(runIds.map(async (id) => {
-    const info = runs.get(id);
-    const candidates = info ? [info.name, info.displayTitle] : [];
-    const detected = detectBuildType(candidates);
-    if (detected) {
-      buildTypes.set(id, detected);
-      return;
-    }
     const cached = await cacheGet(runMetaKey(repo, id));
     if (cached) {
       try {
         const data = await cached.json();
-        if (typeof data.buildType === 'string' && data.buildType) {
-          buildTypes.set(id, data.buildType);
+        if (typeof data.buildType === 'string' && data.buildType && Array.isArray(data.pullRequests)) {
+          runInfo.set(id, data);
           return;
         }
       } catch {}
     }
-    needJobs.push(id);
+    needDetail.push(id);
   }));
 
-  const metaPuts = [];
-  await Promise.all(needJobs.slice(0, maxJobLookups).map(async (id) => {
+  const runPuts = [];
+  const needJobs = [];
+  await Promise.all(needDetail.slice(0, maxRunDetailLookups).map(async (id) => {
+    try {
+      const response = await githubFetch(env, `/repos/${repo}/actions/runs/${id}`);
+      if (!response.ok) return;
+      const run = await response.json();
+      const pullRequests = (run.pull_requests || []).map((pr) => pr.number).filter(Boolean);
+      const buildType = detectBuildType([run.name, run.display_title]);
+      if (buildType) {
+        runInfo.set(id, { buildType, pullRequests });
+        runPuts.push(cachePutJson(runMetaKey(repo, id), { buildType, pullRequests }));
+      } else {
+        needJobs.push({ id, pullRequests });
+      }
+    } catch {}
+  }));
+
+  await Promise.all(needJobs.slice(0, maxJobLookups).map(async ({ id, pullRequests }) => {
     try {
       const response = await githubFetch(env, `/repos/${repo}/actions/runs/${id}/jobs?per_page=${PAGE_SIZE}`);
       if (!response.ok) return;
@@ -297,13 +292,14 @@ async function resolveMetadata(repo, env, runs, runIds, prNumbers, options = {})
         for (const step of job.steps || []) candidates.push(step.name);
       }
       const buildType = detectBuildType(candidates) || 'Unknown';
-      buildTypes.set(id, buildType);
-      metaPuts.push(cachePutJson(runMetaKey(repo, id), { buildType }));
+      runInfo.set(id, { buildType, pullRequests });
+      runPuts.push(cachePutJson(runMetaKey(repo, id), { buildType, pullRequests }));
     } catch {}
   }));
-  await Promise.all(metaPuts);
+  await Promise.all(runPuts);
 
   const [owner, name] = repo.split('/');
+  const prNumbers = [...new Set([...runInfo.values()].flatMap((info) => info.pullRequests))];
   const titles = new Map();
   const missingNumbers = [];
   await Promise.all(prNumbers.map(async (number) => {
@@ -336,14 +332,14 @@ async function resolveMetadata(repo, env, runs, runIds, prNumbers, options = {})
     await Promise.all(titlePuts);
   }
 
-  return { buildTypes, titles };
+  return { runInfo, titles };
 }
 
-function assembleArtifacts(context, buildTypes, titles) {
-  const { active, runs } = context;
+function assembleArtifacts(context, runInfo, titles) {
+  const { active } = context;
   return active.map((artifact) => {
     const run = artifact.workflow_run || {};
-    const info = runs.get(run.id) || {};
+    const info = runInfo.get(run.id) || {};
     return {
       id: artifact.id,
       name: artifact.name,
@@ -351,7 +347,7 @@ function assembleArtifacts(context, buildTypes, titles) {
       created_at: artifact.created_at,
       expires_at: artifact.expires_at,
       expired: artifact.expired,
-      build_type: buildTypes.get(run.id) || 'Unknown',
+      build_type: info.buildType || 'Unknown',
       build_hash: extractBuildHash(artifact.name),
       workflow_run: run.id ? {
         id: run.id,
@@ -365,8 +361,8 @@ function assembleArtifacts(context, buildTypes, titles) {
 
 async function buildArtifactList(repo, env) {
   const context = await fetchArtifactContext(repo, env);
-  const { buildTypes, titles } = await resolveMetadata(repo, env, context.runs, context.runIds, context.prNumbers);
-  return assembleArtifacts(context, buildTypes, titles);
+  const { runInfo, titles } = await resolveMetadata(repo, env, context.runIds);
+  return assembleArtifacts(context, runInfo, titles);
 }
 
 async function cacheList(repo, artifacts) {
@@ -472,11 +468,12 @@ export default {
     for (const repo of allowlist(env)) {
       try {
         const context = await fetchArtifactContext(repo, env);
-        const { buildTypes, titles } = await resolveMetadata(repo, env, context.runs, context.runIds, context.prNumbers, {
+        const { runInfo, titles } = await resolveMetadata(repo, env, context.runIds, {
+          maxRunDetailLookups: MAX_RUN_DETAIL_LOOKUPS_CRON,
           maxJobLookups: MAX_JOB_LOOKUPS_CRON,
           useRestFallback: false
         });
-        await cacheList(repo, assembleArtifacts(context, buildTypes, titles));
+        await cacheList(repo, assembleArtifacts(context, runInfo, titles));
       } catch (error) {
         console.error(`scheduled refresh failed for ${repo}:`, error);
       }
