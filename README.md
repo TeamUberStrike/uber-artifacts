@@ -46,6 +46,24 @@ Redeploy after changing variables.
 
 6. Enable Pages: repository Settings -> Pages -> Source: GitHub Actions, then push to `main`.
 
+## Custom domain
+
+The Pages site is configured for `artifacts.uberstrike.com`. GitHub Pages with a custom Actions workflow ignores `CNAME` files, so the domain is stored in the repository Pages settings (already applied via the API).
+
+1. In the Cloudflare DNS dashboard for `uberstrike.com`, create:
+
+```
+Type:  CNAME
+Name:  artifacts
+Target: teamuberstrike.github.io
+Proxy: DNS only (grey cloud)
+```
+
+The record must not be proxied; GitHub needs to see the DNS record directly to verify the domain and issue the TLS certificate.
+
+2. Wait for GitHub to verify the domain and provision HTTPS, then enable "Enforce HTTPS" in Settings -> Pages.
+3. Keep `ALLOWED_ORIGINS` in `worker/wrangler.toml` in sync with the site origin(s).
+
 ## Deploying the site to Cloudflare Pages instead
 
 Use Cloudflare Pages with the private repository, build command empty, output directory `site`. No GitHub Pages plan is needed.
