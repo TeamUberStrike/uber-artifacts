@@ -110,48 +110,60 @@ The site CSP allows `https://*.workers.dev` (the Worker serves both listing and 
 The REST API keeps each piece in a separate endpoint with no joins:
 
 1. `/actions/artifacts` - list (name, size, dates, run id, branch, sha). No PRs, no build type.
-2. `/actions/runs` - PR numbers per run, in bulk (no per-run calls needed).
-3. `/actions/runs/{id}/jobs` - job/step names used to detect the build type. No bulk endpoint, so one call per run.
+2. `/actions/runs/{id}` - per run: PR numbers and run name/display title. Fetched once per new run.
+3. `/actions/runs/{id}/jobs` - job/step names used to detect the build type. No bulk endpoint, so one call per run - only when the run name does not reveal the build type.
 4. `/pulls/{number}` or GraphQL - PR titles. GraphQL batches up to 100 titles into one request.
 
 GraphQL would be ideal but it does not expose artifacts or workflow runs (`Field 'artifacts' doesn't exist on type 'Repository'`), so REST is used for those and GraphQL only for PR titles. Build types are detected from workflow run names and job/step names (Windows, Android, iOS, Linux, macOS, WebGL).
 
-### How many GitHub calls does one list build make?
+### How the data stays fresh
+
+A cron trigger runs the Worker every minute, without needing visitors:
+
+1. Fetch the artifact list pages (up to 5) - this is the source of truth and the only recurring fetch; it detects new, deleted, and expired artifacts.
+2. For every run the artifacts belong to, check the 30-day metadata cache. Known runs are reused and cost **zero GitHub calls**.
+3. For **new** runs: one `/actions/runs/{id}` call for the PR numbers and run name, plus one jobs call only if the build type is not in the run name. The result (`buildType` + `pullRequests`) is cached for 30 days.
+4. For **new** PRs: titles are fetched in one batched GraphQL request and cached for 30 days.
+5. Assemble the full enriched list and store it in the 60-second list cache.
+
+So in steady state the cron makes only the 5 list calls per minute (300/hour of the 5,000/hour token limit). New runs from a build burst are drained at up to 20 per minute; deleted or expired artifacts disappear from the site within a minute because they are missing from the fresh list. Their download links return `404`/`410` immediately, checked live.
+
+Visitors are served from the cache only. A visitor-triggered GitHub fetch happens only when the cache has no entry (e.g. right after a deploy), using the smaller cold-start caps below.
+
+### How many GitHub calls does a cold-start list build make?
 
 Worst case per artifact count (all active artifacts, each from its own run, build type not visible in run names, GraphQL unavailable so the REST title fallback is used):
 
-| Artifacts | List pages | Run pages | Job lookups | GraphQL titles | REST title fallback | Total |
+| Artifacts | List pages | Run details | Job lookups | GraphQL titles | REST title fallback | Total |
 |---|---|---|---|---|---|---|
-| 10 | 1 | 2 | 10 | 1 | 10 | **24** |
-| 50 | 1 | 2 | 20 (cap) | 1 | 20 (cap) | **44** |
-| 200 | 2 | 2 | 20 (cap) | 1 | 20 (cap) | **45** |
-| 500 | 5 | 2 | 20 (cap) | 1 | 20 (cap) | **48** |
+| 10 | 1 | 10 | 10 | 1 | 10 | **32** |
+| 50 | 1 | 15 (cap) | 15 (cap) | 1 | 12 (cap) | **44** |
+| 200 | 2 | 15 (cap) | 15 (cap) | 1 | 12 (cap) | **45** |
+| 500 | 5 | 15 (cap) | 15 (cap) | 1 | 12 (cap) | **48** |
 
-Typical case (GraphQL works, build types visible in run names): 10 artifacts = ~14, 50 = ~24, 200 = ~25, 500 = ~28.
+Typical case (GraphQL works, build types visible in run names): 10 artifacts = ~12, 50 = ~17, 200 = ~18, 500 = ~21.
 
 Notes:
 
-- The artifact list endpoint returns 100 per page; up to 500 artifacts are listed (5 pages of 100) and expired artifacts are excluded. Run pages cover the 200 most recent runs; job lookups are one per run and capped at 20; PR titles are batched into one GraphQL request (REST fallback capped at 20). Runs are deduplicated, so 50 artifacts from one run cost a single jobs lookup.
-- Build types and PR titles are immutable once a run finishes, so they are cached for 30 days. Only new runs/PRs trigger lookups; over time a list build costs little more than the list and run pages.
-- Cache hits cost zero GitHub calls. A miss happens at most once per 60 seconds, so the worst case per hour is the table total x 60: 500 artifacts = 2,880 calls/hour.
-- Nothing above is per visitor: users make one request to the Worker and get a cache hit most of the time.
+- The artifact list endpoint returns 100 per page; up to 500 artifacts are listed (5 pages of 100) and expired artifacts are excluded. Runs are deduplicated, so 50 artifacts from one run cost a single run-detail and at most one jobs lookup.
+- These tables describe a cold start. With the cron running, builds are rare and start from warm 30-day caches, so the numbers shrink toward zero per build.
+- Cache hits cost zero GitHub calls. The cron's own budget per pass: 5 list pages + 20 run details + 20 job lookups + 1 GraphQL = 46 subrequests, under Cloudflare's 50.
+- Nothing above is per visitor: users make one request to the Worker and get a cache hit almost every time.
 
 Relevant limits:
 
-- GitHub API (fine-grained token): **5,000 requests/hour** - shared by all visitors. Worst case above (2,880/hour) stays under it.
+- GitHub API (fine-grained token): **5,000 requests/hour** - shared by all visitors. Steady state (300/hour) and even the worst case (2,880/hour) stay under it.
 - Cloudflare Workers Free plan: **100,000 requests/day**, **10 ms CPU** per request, **50 subrequests** per request (the 48-call worst case fits under it). Downloads are streamed and have no enforced response body limit.
 - Per-IP rate limits in the Worker: **30 list requests/minute** and **10 downloads/minute**, returning `429` with `Retry-After`.
-- Cache TTLs: **60 seconds** for the artifact list (Cloudflare edge + Worker Cache API), **30 days** for immutable run metadata (build types, PR titles).
+- Cache TTLs: **60 seconds** for the artifact list (Cloudflare edge + Worker Cache API), **30 days** for immutable run metadata (`buildType` + PR numbers) and PR titles.
 
 ### Per user or global?
 
-Global, server-side. Visitors never call GitHub - each makes one request to the Worker, usually a cache hit with 0 GitHub calls. The 48 calls happen once per cache miss, at most once per minute (2,880/hour worst case), under the token's 5,000/hour limit.
+Global, server-side. Visitors never call GitHub - each makes one request to the Worker, usually a cache hit with 0 GitHub calls. The heavy calls happen once per cache miss, and the cron keeps the cache warm every minute regardless of traffic.
 
 ### When does a cache miss happen?
 
-When there is no valid entry for that repo: first request after a deploy, after the 60-second TTL expired, a repo never requested before, or eviction. Deleted or expired artifacts disappear within a minute of the next refresh; their download links return `404`/`410` immediately.
-
-A cron trigger runs every minute and builds the full enriched artifact list on its own, without needing visitors: each pass fetches up to 5 list pages + 2 run pages, fills missing metadata (build types, PR titles) into the 30-day cache with up to 40 job lookups + 1 GraphQL request, then stores the complete list in the 60-second cache. Visitors are therefore served from cache only; a visitor-triggered GitHub fetch happens only if the cache has no entry (e.g. right after a deploy).
+When there is no valid entry for that repo: first request after a deploy, after the 60-second TTL expired, a repo never requested before, or eviction. With the cron filling the cache every minute, misses effectively occur only for the first minute after a deploy.
 
 ### Will my ~10 users ever see a rate limit?
 
