@@ -130,7 +130,7 @@ function render() {
     return `
       <tr>
         <td class="artifact-cell" data-label="Artifact">
-          <div class="name"><a href="${esc(url)}" title="Download artifact">${esc(a.name)}</a></div>
+          <div class="name"><a href="${esc(url)}" title="Download artifact">${esc(a.name)}</a> <span class="badge">${esc(a.build_type || 'Unknown')}</span></div>
           <div class="muted mono">${run.id ? `run ${runLink}${shortSha ? ' \u00b7 ' + shaLink : ''}` : 'run n/a'}</div>
           ${prLine}
         </td>
