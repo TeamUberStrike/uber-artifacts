@@ -85,10 +85,6 @@ The record must not be proxied; GitHub needs to see the DNS record directly to v
 
 2. Wait for GitHub to verify the domain and provision HTTPS, then enable "Enforce HTTPS" in Settings -> Pages.
 
-## Deploying the site to Cloudflare Pages instead
-
-Use Cloudflare Pages, build command empty, output directory `site`. No GitHub Pages plan is needed.
-
 ## Local development
 
 ```bash
