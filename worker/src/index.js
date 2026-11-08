@@ -193,6 +193,32 @@ async function fetchPullRequestTitlesRest(env, repo, numbers) {
   return titles;
 }
 
+const METADATA_TTL_SECONDS = 30 * 24 * 60 * 60;
+
+function runMetaKey(repo, runId) {
+  return `https://artifacts-proxy.invalid/run/${repo.toLowerCase()}/${runId}`;
+}
+
+function prTitleKey(repo, number) {
+  return `https://artifacts-proxy.invalid/pr/${repo.toLowerCase()}/${number}`;
+}
+
+async function cacheGet(key) {
+  const cache = typeof caches !== 'undefined' ? caches.default : null;
+  if (!cache) return null;
+  return cache.match(key);
+}
+
+async function cachePutJson(key, value) {
+  const cache = typeof caches !== 'undefined' ? caches.default : null;
+  if (!cache) return;
+  const response = new Response(JSON.stringify(value), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': `public, max-age=${METADATA_TTL_SECONDS}` }
+  });
+  await cache.put(key, response);
+}
+
 async function buildArtifactList(repo, env) {
   const artifacts = [];
   for (let page = 1; page <= MAX_ARTIFACT_PAGES; page++) {
@@ -230,14 +256,28 @@ async function buildArtifactList(repo, env) {
   const runIds = [...new Set(active.map((artifact) => artifact.workflow_run && artifact.workflow_run.id).filter(Boolean))];
   const buildTypes = new Map();
   const needJobs = [];
-  for (const id of runIds) {
+  await Promise.all(runIds.map(async (id) => {
     const info = runs.get(id);
     const candidates = info ? [info.name, info.displayTitle] : [];
     const detected = detectBuildType(candidates);
-    if (detected) buildTypes.set(id, detected);
-    else needJobs.push(id);
-  }
+    if (detected) {
+      buildTypes.set(id, detected);
+      return;
+    }
+    const cached = await cacheGet(runMetaKey(repo, id));
+    if (cached) {
+      try {
+        const data = await cached.json();
+        if (typeof data.buildType === 'string' && data.buildType) {
+          buildTypes.set(id, data.buildType);
+          return;
+        }
+      } catch {}
+    }
+    needJobs.push(id);
+  }));
 
+  const metaPuts = [];
   await Promise.all(needJobs.slice(0, MAX_JOB_LOOKUPS).map(async (id) => {
     try {
       const response = await githubFetch(env, `/repos/${repo}/actions/runs/${id}/jobs?per_page=${PAGE_SIZE}`);
@@ -248,20 +288,45 @@ async function buildArtifactList(repo, env) {
         candidates.push(job.name);
         for (const step of job.steps || []) candidates.push(step.name);
       }
-      buildTypes.set(id, detectBuildType(candidates));
+      const buildType = detectBuildType(candidates) || 'Unknown';
+      buildTypes.set(id, buildType);
+      metaPuts.push(cachePutJson(runMetaKey(repo, id), { buildType }));
     } catch {}
   }));
+  await Promise.all(metaPuts);
 
   const [owner, name] = repo.split('/');
   const prNumbers = [...new Set(runIds.flatMap((id) => (runs.get(id) ? runs.get(id).pullRequests : [])))];
-  let titles = new Map();
-  if (prNumbers.length && isSafeRepoPart(owner) && isSafeRepoPart(name)) {
-    const limited = prNumbers.slice(0, MAX_PR_TITLE_LOOKUPS);
-    const result = await fetchPullRequestTitles(env, owner, name, limited);
-    titles = result.titles;
-    if (!result.graphqlOk) {
-      titles = await fetchPullRequestTitlesRest(env, repo, limited);
+  const titles = new Map();
+  const missingNumbers = [];
+  await Promise.all(prNumbers.map(async (number) => {
+    const cached = await cacheGet(prTitleKey(repo, number));
+    if (cached) {
+      try {
+        const data = await cached.json();
+        if (data.title) titles.set(number, data.title);
+        return;
+      } catch {}
     }
+    missingNumbers.push(number);
+  }));
+
+  if (missingNumbers.length && isSafeRepoPart(owner) && isSafeRepoPart(name)) {
+    const limited = missingNumbers.slice(0, MAX_PR_TITLE_LOOKUPS);
+    const titlePuts = [];
+    const result = await fetchPullRequestTitles(env, owner, name, limited);
+    for (const [number, title] of result.titles) {
+      titles.set(number, title);
+      titlePuts.push(cachePutJson(prTitleKey(repo, number), { title }));
+    }
+    if (!result.graphqlOk) {
+      const restTitles = await fetchPullRequestTitlesRest(env, repo, limited);
+      for (const [number, title] of restTitles) {
+        titles.set(number, title);
+        titlePuts.push(cachePutJson(prTitleKey(repo, number), { title }));
+      }
+    }
+    await Promise.all(titlePuts);
   }
 
   return active.map((artifact) => {
