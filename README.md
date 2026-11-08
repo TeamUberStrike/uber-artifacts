@@ -88,7 +88,7 @@ The site CSP only allows `https://*.workers.dev` by default. For local testing a
 
 ## Behavior and limits
 
-- Artifact lists are cached for 60 seconds using the Workers Cache API.
+- Artifact lists are not cached; every request fetches fresh data from GitHub (`Cache-Control: no-store`), so deletions appear immediately.
 - Up to 500 artifacts are listed (5 pages of 100).
 - Build types are detected from workflow job and step names (Windows, Android, iOS, Linux, macOS, WebGL).
 - Metadata is resolved for up to 15 distinct runs, 15 job lists, and 10 pull requests per list request to stay within the Workers Free plan subrequest limit.

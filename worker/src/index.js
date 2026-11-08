@@ -4,8 +4,6 @@ const MAX_PAGES = 5;
 const MAX_RUN_LOOKUPS = 15;
 const MAX_PR_LOOKUPS = 10;
 const MAX_JOB_LOOKUPS = 15;
-const CACHE_VERSION = '4';
-const CACHE_TTL_SECONDS = 60;
 const BUILD_TYPES = [
   ['Windows', ['windows', 'win64', 'win32', 'standalonewindows']],
   ['Android', ['android']],
@@ -229,30 +227,8 @@ async function listHandler(request, env, ctx, repo) {
     throw new HttpError(403, 'Repository is not allowed by this proxy');
   }
 
-  const cache = typeof caches !== 'undefined' ? caches.default : null;
-  if (cache) {
-    const key = new Request(`https://artifacts-proxy.invalid/${CACHE_VERSION}/list/${repo.toLowerCase()}`, { method: 'GET' });
-    const cached = await cache.match(key);
-    if (cached) {
-      const headers = new Headers(cached.headers);
-      for (const [name, value] of corsHeaders(request, env)) headers.set(name, value);
-      return new Response(request.method === 'HEAD' ? null : cached.body, { status: cached.status, headers });
-    }
-  }
-
   const artifacts = await buildArtifactList(repo, env);
-  const response = jsonResponse(request, env, { repo, artifacts }, 200, CACHE_TTL_SECONDS);
-
-  if (cache) {
-    const key = new Request(`https://artifacts-proxy.invalid/${CACHE_VERSION}/list/${repo.toLowerCase()}`, { method: 'GET' });
-    const cacheable = new Response(JSON.stringify({ repo, artifacts }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': `public, max-age=${CACHE_TTL_SECONDS}` }
-    });
-    if (ctx && ctx.waitUntil) ctx.waitUntil(cache.put(key, cacheable));
-  }
-
-  return response;
+  return jsonResponse(request, env, { repo, artifacts }, 200, 0);
 }
 
 function contentDisposition(name) {
