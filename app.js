@@ -147,8 +147,8 @@ function render() {
   }).join('');
 
   const empty = $('empty');
-  empty.hidden = state.error || visible.length !== 0;
-  $('empty-text').textContent = active.length === 0 ? 'No artifacts available.' : 'No artifacts match the current filters.';
+  empty.hidden = state.error || visible.length !== 0 || active.length !== 0;
+  $('empty-text').textContent = 'No artifacts available.';
   $('filter').disabled = active.length === 0;
 
   if (!state.error) {
