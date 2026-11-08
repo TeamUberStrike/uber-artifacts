@@ -107,7 +107,7 @@ The artifact list and its metadata are fetched client-side from the GitHub API; 
 
 ## Behavior and limits
 
-- Listing and metadata (build type, branch, commit, PR number and title) are fetched directly from `api.github.com` in the browser. Anonymous GitHub API rate limit: 60 requests/hour per IP.
+- Listing and metadata (build type, branch, commit, PR number and title) are fetched directly from `api.github.com` in the browser. One page load costs roughly `1 + 2 x distinct runs + PRs` API requests. Anonymous GitHub API rate limit: 60 requests/hour per IP.
 - Up to 500 artifacts are listed (5 pages of 100). Expired artifacts are excluded.
 - Build types are detected from workflow job and step names (Windows, Android, iOS, Linux, macOS, WebGL).
 - Cloudflare Workers Free plan: 100,000 requests/day, 10 ms CPU per request; downloads are streamed and have no enforced response body limit.
