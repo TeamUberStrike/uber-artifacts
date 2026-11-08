@@ -107,17 +107,56 @@ The site CSP allows `https://*.workers.dev` (the Worker serves both listing and 
 - `GET /api/artifacts/:owner/:repo` - artifact list with build type, branch, commit, run, and pull request title metadata
 - `GET /download/:owner/:repo/:artifactId` - streams the artifact zip (`HEAD` supported)
 
-## Behavior and limits
+## FAQ
 
-- List responses are cached for 60 seconds (Cloudflare edge + Worker Cache API). GitHub is only called on a cache miss, so at most ~1 list build per minute.
-- Each list build costs up to 5 artifact pages + 2 run pages + 20 job lists + 1 batched GraphQL request for PR titles (up to 100 titles in one call, REST fallback if the token cannot use GraphQL). Worst case ~48 GitHub API calls per cache miss.
-- The fine-grained token allows 5,000 requests/hour: even one cache miss per minute (2,880 calls/hour worst case) stays far below the limit, so visitors never hit a rate limit.
-- Up to 500 artifacts are listed (5 pages of 100). Expired artifacts are excluded.
-- Build types are detected from workflow run names and job/step names (Windows, Android, iOS, Linux, macOS, WebGL).
-- The list cache renews lazily: the first request after the 60-second TTL expires triggers a fresh GitHub fetch, so deleted or expired artifacts disappear within a minute. Download links clicked after deletion return `404`/`410` immediately.
-- Rate limiting per IP: 30 list requests and 10 download requests per minute; exceeding returns `429` with `Retry-After`.
-- Cloudflare Workers Free plan: 100,000 requests/day, 10 ms CPU per request, 50 subrequests per request (the 48-call worst case fits under it); downloads are streamed and have no enforced response body limit.
-- The download endpoint returns `410` for an expired artifact.
+### Why so many GitHub requests?
+
+The REST API keeps each piece in a separate endpoint with no joins:
+
+1. `/actions/artifacts` - list (name, size, dates, run id, branch, sha). No PRs, no build type.
+2. `/actions/runs` - PR numbers per run, in bulk (no per-run calls needed).
+3. `/actions/runs/{id}/jobs` - job/step names used to detect the build type. No bulk endpoint, so one call per run.
+4. `/pulls/{number}` or GraphQL - PR titles. GraphQL batches up to 100 titles into one request.
+
+GraphQL would be ideal but it does not expose artifacts or workflow runs (`Field 'artifacts' doesn't exist on type 'Repository'`), so REST is used for those and GraphQL only for PR titles. Build types are detected from workflow run names and job/step names (Windows, Android, iOS, Linux, macOS, WebGL).
+
+### How many GitHub calls does one list build make?
+
+Worst case per artifact count (all active artifacts, each from its own run, build type not visible in run names, GraphQL unavailable so the REST title fallback is used):
+
+| Artifacts | List pages | Run pages | Job lookups | GraphQL titles | REST title fallback | Total |
+|---|---|---|---|---|---|---|
+| 10 | 1 | 2 | 10 | 1 | 10 | **24** |
+| 50 | 1 | 2 | 20 (cap) | 1 | 20 (cap) | **44** |
+| 200 | 2 | 2 | 20 (cap) | 1 | 20 (cap) | **45** |
+| 500 | 5 | 2 | 20 (cap) | 1 | 20 (cap) | **48** |
+
+Typical case (GraphQL works, build types visible in run names): 10 artifacts = ~14, 50 = ~24, 200 = ~25, 500 = ~28.
+
+Notes:
+
+- The artifact list endpoint returns 100 per page; up to 500 artifacts are listed (5 pages of 100) and expired artifacts are excluded. Run pages cover the 200 most recent runs; job lookups are one per run and capped at 20; PR titles are batched into one GraphQL request (REST fallback capped at 20). Runs are deduplicated, so 50 artifacts from one run cost a single jobs lookup.
+- Cache hits cost zero GitHub calls. A miss happens at most once per 60 seconds, so the worst case per hour is the table total x 60: 500 artifacts = 2,880 calls/hour.
+- Nothing above is per visitor: users make one request to the Worker and get a cache hit most of the time.
+
+Relevant limits:
+
+- GitHub API (fine-grained token): **5,000 requests/hour** - shared by all visitors. Worst case above (2,880/hour) stays under it.
+- Cloudflare Workers Free plan: **100,000 requests/day**, **10 ms CPU** per request, **50 subrequests** per request (the 48-call worst case fits under it). Downloads are streamed and have no enforced response body limit.
+- Per-IP rate limits in the Worker: **30 list requests/minute** and **10 downloads/minute**, returning `429` with `Retry-After`.
+- Cache TTL: **60 seconds** (Cloudflare edge + Worker Cache API).
+
+### Per user or global?
+
+Global, server-side. Visitors never call GitHub - each makes one request to the Worker, usually a cache hit with 0 GitHub calls. The 48 calls happen once per cache miss, at most once per minute (2,880/hour worst case), under the token's 5,000/hour limit.
+
+### When does a cache miss happen?
+
+When there is no valid entry for that repo: first request after a deploy, after the 60-second TTL expired, a repo never requested before, or eviction. The cache renews lazily - if nobody requests anything, the Worker does not fetch from GitHub at all. Deleted or expired artifacts disappear within a minute of the next refresh; their download links return `404`/`410` immediately.
+
+### Will my ~10 users ever see a rate limit?
+
+No. Listing is served from cache or by the Worker's shared token (5,000/hour), not by per-visitor anonymous limits. Downloads are the only thing that could be rate-limited, at 10/minute per IP.
 
 ## Security notes
 
