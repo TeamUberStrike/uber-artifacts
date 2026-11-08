@@ -149,7 +149,9 @@ Global, server-side. Visitors never call GitHub - each makes one request to the 
 
 ### When does a cache miss happen?
 
-When there is no valid entry for that repo: first request after a deploy, after the 60-second TTL expired, a repo never requested before, or eviction. The cache renews lazily - if nobody requests anything, the Worker does not fetch from GitHub at all. Deleted or expired artifacts disappear within a minute of the next refresh; their download links return `404`/`410` immediately.
+When there is no valid entry for that repo: first request after a deploy, after the 60-second TTL expired, a repo never requested before, or eviction. Deleted or expired artifacts disappear within a minute of the next refresh; their download links return `404`/`410` immediately.
+
+A cron trigger runs every minute and fills missing run metadata (build types, PR titles) into the 30-day cache; once everything is cached it only fetches the list and run pages to discover new runs. The 60-second artifact-list cache itself is refreshed only by visitor requests.
 
 ### Will my ~10 users ever see a rate limit?
 

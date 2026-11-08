@@ -219,7 +219,7 @@ async function cachePutJson(key, value) {
   await cache.put(key, response);
 }
 
-async function buildArtifactList(repo, env) {
+async function fetchArtifactContext(repo, env) {
   const artifacts = [];
   for (let page = 1; page <= MAX_ARTIFACT_PAGES; page++) {
     const response = await githubFetch(env, `/repos/${repo}/actions/artifacts?per_page=${PAGE_SIZE}&page=${page}`);
@@ -254,6 +254,11 @@ async function buildArtifactList(repo, env) {
   }
 
   const runIds = [...new Set(active.map((artifact) => artifact.workflow_run && artifact.workflow_run.id).filter(Boolean))];
+  const prNumbers = [...new Set(runIds.flatMap((id) => (runs.get(id) ? runs.get(id).pullRequests : [])))];
+  return { active, runs, runIds, prNumbers };
+}
+
+async function resolveMetadata(repo, env, runs, runIds, prNumbers) {
   const buildTypes = new Map();
   const needJobs = [];
   await Promise.all(runIds.map(async (id) => {
@@ -296,7 +301,6 @@ async function buildArtifactList(repo, env) {
   await Promise.all(metaPuts);
 
   const [owner, name] = repo.split('/');
-  const prNumbers = [...new Set(runIds.flatMap((id) => (runs.get(id) ? runs.get(id).pullRequests : [])))];
   const titles = new Map();
   const missingNumbers = [];
   await Promise.all(prNumbers.map(async (number) => {
@@ -328,6 +332,13 @@ async function buildArtifactList(repo, env) {
     }
     await Promise.all(titlePuts);
   }
+
+  return { buildTypes, titles };
+}
+
+async function buildArtifactList(repo, env) {
+  const { active, runs, runIds, prNumbers } = await fetchArtifactContext(repo, env);
+  const { buildTypes, titles } = await resolveMetadata(repo, env, runs, runIds, prNumbers);
 
   return active.map((artifact) => {
     const run = artifact.workflow_run || {};
@@ -450,6 +461,16 @@ async function downloadHandler(request, env, repo, artifactId) {
 }
 
 export default {
+  async scheduled(event, env) {
+    for (const repo of allowlist(env)) {
+      try {
+        const { runs, runIds, prNumbers } = await fetchArtifactContext(repo, env);
+        await resolveMetadata(repo, env, runs, runIds, prNumbers);
+      } catch (error) {
+        console.error(`scheduled metadata fill failed for ${repo}:`, error);
+      }
+    }
+  },
   async fetch(request, env, ctx) {
     try {
       if (request.method === 'OPTIONS') return preflight(request, env);
