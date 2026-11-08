@@ -87,10 +87,17 @@ function renderFilters(active) {
     '<span class="filter-label">Build</span>' +
     chip('build', '', 'All', state.buildFilter === '') +
     types.map((type) => chip('build', type, type, state.buildFilter === type)).join('');
+  const otherBranches = branches.filter((branch) => branch !== 'main');
+  const selectValue = state.branchFilter !== 'main' && otherBranches.includes(state.branchFilter) ? state.branchFilter : '';
   $('branch-filters').innerHTML =
     '<span class="filter-label">Branch</span>' +
-    chip('branch', '', 'All', state.branchFilter === '') +
-    branches.map((branch) => chip('branch', branch, branch, state.branchFilter === branch)).join('');
+    chip('branch', 'main', 'main', state.branchFilter === 'main') +
+    (otherBranches.length
+      ? '<select id="branch-select">' +
+        '<option value="">All</option>' +
+        otherBranches.map((branch) => `<option value="${esc(branch)}"${branch === selectValue ? ' selected' : ''}>${esc(branch)}</option>`).join('') +
+        '</select>'
+      : '');
 }
 
 function render() {
@@ -123,7 +130,7 @@ function render() {
     return `
       <tr>
         <td class="artifact-cell" data-label="Artifact">
-          <div class="name">${esc(a.name)}</div>
+          <div class="name"><a href="${esc(url)}" title="Download artifact">${esc(a.name)}</a></div>
           <div class="muted mono">${run.id ? `run ${runLink}${shortSha ? ' \u00b7 ' + shaLink : ''}` : 'run n/a'}</div>
           ${prLine}
         </td>
@@ -131,12 +138,6 @@ function render() {
         <td class="muted" data-label="Size">${esc(fmtBytes(a.size_in_bytes))}</td>
         <td class="muted" data-label="Created">${esc(fmtDate(a.created_at))}</td>
         <td class="muted" data-label="Expires">${esc(fmtDate(a.expires_at))}</td>
-        <td class="actions-cell">
-          <div class="actions">
-            <button class="small" type="button" data-copy="${esc(url)}" title="Copy download link">Copy link</button>
-            <a class="btn small" href="${esc(url)}">Download</a>
-          </div>
-        </td>
       </tr>`;
   }).join('');
 
@@ -198,24 +199,15 @@ $('filters').addEventListener('click', (event) => {
   const button = event.target.closest('button.chip');
   if (!button) return;
   if (button.dataset.kind === 'build') state.buildFilter = button.dataset.value;
-  else if (button.dataset.kind === 'branch') state.branchFilter = button.dataset.value;
+  else if (button.dataset.kind === 'branch') state.branchFilter = state.branchFilter === button.dataset.value ? '' : button.dataset.value;
   else return;
   render();
 });
 
-$('rows').addEventListener('click', async (event) => {
-  const button = event.target.closest('button[data-copy]');
-  if (!button) return;
-  const value = button.dataset.copy;
-  if (!value) return;
-  try {
-    await navigator.clipboard.writeText(value);
-    const original = button.textContent;
-    button.textContent = 'Copied';
-    setTimeout(() => { button.textContent = original; }, 1200);
-  } catch {
-    setStatus('Copy failed; clipboard access was denied.', true);
-  }
+$('filters').addEventListener('change', (event) => {
+  if (event.target.id !== 'branch-select') return;
+  state.branchFilter = event.target.value;
+  render();
 });
 
 const savedRepo = localStorage.getItem('ghArtifacts.repo');
