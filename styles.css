@@ -122,7 +122,7 @@ button.primary:hover { background: linear-gradient(180deg, #35b04b, #2a9440); }
   flex-wrap: wrap;
   align-items: center;
   gap: 10px 22px;
-  padding: 0 24px 14px;
+  padding: 12px 24px 14px;
   border-bottom: 1px solid var(--border);
 }
 .filters[hidden] { display: none; }
