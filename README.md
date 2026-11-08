@@ -130,9 +130,9 @@ So in steady state the cron makes only the 5 list calls per minute (300/hour of 
 
 Visitors are served from the cache only. A visitor-triggered GitHub fetch happens only when the cache has no entry (e.g. right after a deploy), using the smaller cold-start caps below.
 
-### What is Cloudflare's 50-subrequest limit?
+### Relevant limits
 
-On the Workers Free plan, one Worker invocation (a single HTTP request or a single scheduled cron run) may make at most **50 subrequests** - every outbound `fetch()` the Worker code performs against another server (here: `api.github.com`) counts as one, and the invocation is cut off when the 50th is reached.
+**Cloudflare Workers Free plan - 50 subrequests per invocation.** One Worker invocation (a single HTTP request or a single scheduled cron run) may make at most **50 subrequests** - every outbound `fetch()` the Worker code performs against another server (here: `api.github.com`) counts as one, and the invocation is cut off when the 50th is reached.
 
 What counts and what does not:
 
@@ -142,6 +142,13 @@ What counts and what does not:
 - The 50 limit applies per invocation, not per minute: two requests right after each other get two fresh budgets
 
 That is why every cap in this project (20/20 for the cron, 15/15/12 for cold-start visitor builds) exists: each total budget is sized to stay under 50, and everything else is served from the free-to-read cache.
+
+The other limits in play:
+
+- **Cloudflare Workers Free plan**: 100,000 requests/day, 10 ms CPU per request. Downloads are streamed and have no enforced response body limit.
+- **GitHub API (fine-grained token)**: 5,000 requests/hour - shared by all visitors. Steady state (300/hour) and even the worst case (2,880/hour) stay under it.
+- **Per-IP rate limits in the Worker**: 30 list requests/minute and 10 downloads/minute, returning `429` with `Retry-After`.
+- **Cache TTLs**: 60 seconds for the artifact list (Cloudflare edge + Worker Cache API), 30 days for immutable run metadata (`buildType` + PR numbers) and PR titles.
 
 ### How many GitHub calls does a cold-start list build make?
 
@@ -162,13 +169,6 @@ Notes:
 - These tables describe a cold start. With the cron running, builds are rare and start from warm 30-day caches, so the numbers shrink toward zero per build.
 - Cache hits cost zero GitHub calls. The cron's own budget per pass: 5 list pages + 20 run details + 20 job lookups + 1 GraphQL = 46 subrequests, under Cloudflare's 50-subrequest limit.
 - Nothing above is per visitor: users make one request to the Worker and get a cache hit almost every time.
-
-Relevant limits:
-
-- GitHub API (fine-grained token): **5,000 requests/hour** - shared by all visitors. Steady state (300/hour) and even the worst case (2,880/hour) stay under it.
-- Cloudflare Workers Free plan: **100,000 requests/day**, **10 ms CPU** per request, **50 subrequests** per request (the 48-call worst case fits under it). Downloads are streamed and have no enforced response body limit.
-- Per-IP rate limits in the Worker: **30 list requests/minute** and **10 downloads/minute**, returning `429` with `Retry-After`.
-- Cache TTLs: **60 seconds** for the artifact list (Cloudflare edge + Worker Cache API), **30 days** for immutable run metadata (`buildType` + PR numbers) and PR titles.
 
 ### Per user or global?
 
