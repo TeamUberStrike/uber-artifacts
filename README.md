@@ -147,7 +147,7 @@ Notes:
 
 - The artifact list endpoint returns 100 per page; up to 500 artifacts are listed (5 pages of 100) and expired artifacts are excluded. Runs are deduplicated, so 50 artifacts from one run cost a single run-detail and at most one jobs lookup.
 - These tables describe a cold start. With the cron running, builds are rare and start from warm 30-day caches, so the numbers shrink toward zero per build.
-- Cache hits cost zero GitHub calls. The cron's own budget per pass: 5 list pages + 20 run details + 20 job lookups + 1 GraphQL = 46 subrequests, under Cloudflare's 50.
+- Cache hits cost zero GitHub calls. The cron's own budget per pass: 5 list pages + 20 run details + 20 job lookups + 1 GraphQL = 46 subrequests, under Cloudflare's 50-subrequest limit.
 
 ### What is Cloudflare's 50-subrequest limit?
 
