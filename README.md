@@ -10,29 +10,35 @@ Browser (GitHub Pages / Cloudflare Pages)
 
 The GitHub token lives only in the Worker as a secret. The static site contains no credentials.
 
-## Private repository caveat
-
-The repository can be private, but the published site and the downloads are public by design ("downloads for everyone"). A private repository does not make the Pages site private.
-
-GitHub Pages inside a private repository requires GitHub Pro, Team, or Enterprise Cloud. If the account does not have that, deploy the `site/` directory to Cloudflare Pages instead, which supports private repositories for free and still publishes a public site.
-
 ## Setup
 
-1. Create the repository (private is fine) and push this code.
+1. Create the repository and push this code.
 2. Create a fine-grained personal access token:
    - Resource owner: `TeamUberStrike`
    - Repository access: only `uber-client-4-3-8`
    - Permissions: `Actions: Read-only` and `Metadata: Read-only`
-3. Deploy the Worker:
+3. Deploy the Worker proxy to Cloudflare (see [Deploying the Worker to Cloudflare](#deploying-the-worker-to-cloudflare)).
+4. Set the deployed Worker URL as a repository Actions variable named `ARTIFACTS_PROXY_URL` (Settings -> Secrets and variables -> Actions -> Variables). The Pages workflow injects it into `site/config.js` during deployment. You can also edit `site/config.js` directly.
+5. Enable Pages: repository Settings -> Pages -> Source: GitHub Actions, then push to `main`. The workflow in `.github/workflows/pages.yml` deploys `site/` on every push to `main`.
+
+## Deploying the Worker to Cloudflare
+
+The proxy runs on Cloudflare Workers and requires Node.js 22+.
+
+1. Authenticate with Cloudflare:
 
 ```bash
 cd worker
 npx wrangler login
-npx wrangler secret put GITHUB_TOKEN
-npx wrangler deploy
 ```
 
-4. Edit `worker/wrangler.toml`:
+2. Store the GitHub token as a secret:
+
+```bash
+npx wrangler secret put GITHUB_TOKEN
+```
+
+3. Edit `worker/wrangler.toml`:
 
 ```toml
 [vars]
@@ -40,11 +46,15 @@ ALLOWED_REPOS = "TeamUberStrike/uber-client-4-3-8"
 ALLOWED_ORIGINS = "https://teamuberstrike.github.io"
 ```
 
-Redeploy after changing variables.
+4. Deploy:
 
-5. Set the deployed Worker URL as a repository Actions variable named `ARTIFACTS_PROXY_URL` (Settings -> Secrets and variables -> Actions -> Variables). The Pages workflow injects it into `site/config.js` during deployment. You can also edit `site/config.js` directly.
+```bash
+npx wrangler deploy
+```
 
-6. Enable Pages: repository Settings -> Pages -> Source: GitHub Actions, then push to `main`.
+The Worker is now live at `https://uber-artifacts-proxy.<your-subdomain>.workers.dev`. Redeploy after changing variables.
+
+5. (Optional) attach a custom domain to the Worker (e.g. `proxy.uberstrike.com`), then add it to `ALLOWED_ORIGINS` and to the `connect-src` directive of the site CSP in `site/index.html`.
 
 ## Custom domain
 
@@ -66,7 +76,7 @@ The record must not be proxied; GitHub needs to see the DNS record directly to v
 
 ## Deploying the site to Cloudflare Pages instead
 
-Use Cloudflare Pages with the private repository, build command empty, output directory `site`. No GitHub Pages plan is needed.
+Use Cloudflare Pages, build command empty, output directory `site`. No GitHub Pages plan is needed.
 
 ## Local development
 
