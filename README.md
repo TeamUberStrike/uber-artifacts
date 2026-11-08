@@ -101,7 +101,7 @@ The site CSP only allows `https://*.workers.dev` by default. For local testing a
 - Artifact lists are not cached; every request fetches fresh data from GitHub (`Cache-Control: no-store`), so deletions appear immediately.
 - Up to 500 artifacts are listed (5 pages of 100).
 - Build types are detected from workflow job and step names (Windows, Android, iOS, Linux, macOS, WebGL).
-- Metadata is resolved for up to 15 distinct runs, 15 job lists, and 10 pull requests per list request to stay within the Workers Free plan subrequest limit.
+- Run details (build type, branch, commit, PR number and title) are resolved for up to 15 distinct runs, 15 job lists, and 10 pull requests per list request to stay within the Workers Free plan subrequest limit.
 - Cloudflare Workers Free plan: 100,000 requests/day, 10 ms CPU per request; downloads are streamed and have no enforced response body limit.
 - Expired artifacts are excluded from the list. The download endpoint also returns `410` for an expired artifact.
 
