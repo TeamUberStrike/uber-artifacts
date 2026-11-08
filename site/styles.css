@@ -41,20 +41,6 @@ header {
   padding: 18px 24px;
 }
 .brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
-.brand-mark {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 42px;
-  height: 42px;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #58a6ff, #1f6feb);
-  color: #fff;
-  font-size: 22px;
-  font-weight: 800;
-  box-shadow: 0 4px 14px rgba(31, 111, 235, 0.35);
-}
 .brand-text { min-width: 0; }
 h1 {
   margin: 0;
@@ -249,7 +235,6 @@ footer {
 
 @media (max-width: 760px) {
   .header-inner { padding: 16px 12px; gap: 14px; }
-  .brand-mark { width: 36px; height: 36px; font-size: 19px; border-radius: 10px; }
   h1 { font-size: 18px; }
   form { align-items: stretch; width: 100%; }
   form label:first-child { flex: 1 1 100%; }
