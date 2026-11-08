@@ -3,6 +3,7 @@ const PAGE_SIZE = 100;
 const MAX_ARTIFACT_PAGES = 5;
 const MAX_RUN_LIST_PAGES = 2;
 const MAX_JOB_LOOKUPS = 20;
+const MAX_JOB_LOOKUPS_CRON = 40;
 const MAX_PR_TITLE_LOOKUPS = 100;
 const CACHE_TTL_SECONDS = 60;
 const BUILD_TYPES = [
@@ -258,7 +259,9 @@ async function fetchArtifactContext(repo, env) {
   return { active, runs, runIds, prNumbers };
 }
 
-async function resolveMetadata(repo, env, runs, runIds, prNumbers) {
+async function resolveMetadata(repo, env, runs, runIds, prNumbers, options = {}) {
+  const maxJobLookups = options.maxJobLookups || MAX_JOB_LOOKUPS;
+  const useRestFallback = options.useRestFallback !== false;
   const buildTypes = new Map();
   const needJobs = [];
   await Promise.all(runIds.map(async (id) => {
@@ -283,7 +286,7 @@ async function resolveMetadata(repo, env, runs, runIds, prNumbers) {
   }));
 
   const metaPuts = [];
-  await Promise.all(needJobs.slice(0, MAX_JOB_LOOKUPS).map(async (id) => {
+  await Promise.all(needJobs.slice(0, maxJobLookups).map(async (id) => {
     try {
       const response = await githubFetch(env, `/repos/${repo}/actions/runs/${id}/jobs?per_page=${PAGE_SIZE}`);
       if (!response.ok) return;
@@ -323,7 +326,7 @@ async function resolveMetadata(repo, env, runs, runIds, prNumbers) {
       titles.set(number, title);
       titlePuts.push(cachePutJson(prTitleKey(repo, number), { title }));
     }
-    if (!result.graphqlOk) {
+    if (!result.graphqlOk && useRestFallback) {
       const restTitles = await fetchPullRequestTitlesRest(env, repo, limited);
       for (const [number, title] of restTitles) {
         titles.set(number, title);
@@ -465,7 +468,10 @@ export default {
     for (const repo of allowlist(env)) {
       try {
         const { runs, runIds, prNumbers } = await fetchArtifactContext(repo, env);
-        await resolveMetadata(repo, env, runs, runIds, prNumbers);
+        await resolveMetadata(repo, env, runs, runIds, prNumbers, {
+          maxJobLookups: MAX_JOB_LOOKUPS_CRON,
+          useRestFallback: false
+        });
       } catch (error) {
         console.error(`scheduled metadata fill failed for ${repo}:`, error);
       }

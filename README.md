@@ -151,7 +151,7 @@ Global, server-side. Visitors never call GitHub - each makes one request to the 
 
 When there is no valid entry for that repo: first request after a deploy, after the 60-second TTL expired, a repo never requested before, or eviction. Deleted or expired artifacts disappear within a minute of the next refresh; their download links return `404`/`410` immediately.
 
-A cron trigger runs every minute and fills missing run metadata (build types, PR titles) into the 30-day cache; once everything is cached it only fetches the list and run pages to discover new runs. The 60-second artifact-list cache itself is refreshed only by visitor requests.
+A cron trigger runs every minute and fills missing run metadata (build types, PR titles) into the 30-day cache entirely on its own, without needing visitors: each pass uses the full subrequest budget (5 list pages + 2 run pages + up to 40 job lookups + 1 GraphQL request = 48 of the allowed 50). Once everything is cached it only fetches the list and run pages to discover new runs. The 60-second artifact-list cache itself is refreshed only by visitor requests.
 
 ### Will my ~10 users ever see a rate limit?
 
