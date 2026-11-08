@@ -225,12 +225,6 @@ tbody tr:hover td { background: rgba(47, 129, 247, 0.05); }
 }
 .empty svg { opacity: 0.45; }
 .empty p { margin: 0; font-size: 14px; }
-footer {
-  padding: 0 24px 36px;
-  text-align: center;
-  color: var(--muted);
-  font-size: 12px;
-}
 
 @media (max-width: 760px) {
   .header-inner { padding: 16px 12px; gap: 14px; }
@@ -265,5 +259,4 @@ footer {
   td.artifact-cell::before { display: none; }
   td.artifact-cell { padding-bottom: 12px; }
   .name { font-size: 14px; }
-  footer { padding: 0 12px 28px; }
 }
