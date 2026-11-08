@@ -99,7 +99,7 @@ npx wrangler dev
 python3 -m http.server 8080 -d site
 ```
 
-The site CSP allows `https://*.workers.dev` (downloads) and `https://api.github.com` (listing) by default. For local download testing against `http://127.0.0.1:8787`, temporarily add `http://127.0.0.1:8787` to the `connect-src` directive in `site/index.html`.
+The site CSP allows `https://*.workers.dev` (the Worker serves both listing and downloads) by default. For local download testing against `http://127.0.0.1:8787`, temporarily add `http://127.0.0.1:8787` to the `connect-src` directive in `site/index.html`.
 
 ## Endpoints
 
@@ -127,3 +127,48 @@ The site CSP allows `https://*.workers.dev` (downloads) and `https://api.github.
 - Per-IP rate limits (30 list/min, 10 downloads/min) return `429`. The 60-second edge cache absorbs repeated list requests without touching the Worker or GitHub.
 - For hard anti-abuse protection, add a Cloudflare WAF rate-limiting rule (e.g. on a custom domain attached to the Worker) and/or enable Bot Fight Mode.
 - The site CSP restricts scripts to same-origin files and network access to `*.workers.dev`. Update `connect-src` if you attach a custom domain to the Worker.
+
+## FAQ
+
+### Why so many GitHub requests?
+
+The REST API keeps each piece in a separate endpoint with no joins:
+
+1. `/actions/artifacts` - list (name, size, dates, run id, branch, sha). No PRs, no build type.
+2. `/actions/runs` - PR numbers per run, in bulk (no per-run calls needed).
+3. `/actions/runs/{id}/jobs` - job/step names used to detect the build type. No bulk endpoint, so one call per run.
+4. `/pulls/{number}` or GraphQL - PR titles. GraphQL batches up to 100 titles into one request.
+
+GraphQL would be ideal but it does not expose artifacts or workflow runs (`Field 'artifacts' doesn't exist on type 'Repository'`), so REST is used for those and GraphQL only for PR titles.
+
+### Does one request include all data?
+
+No. One cache miss costs roughly `1-5 list pages + 1-2 run pages + up to 20 job lookups + 1 GraphQL titles request`. Cache hits cost zero GitHub calls.
+
+### Why 5 artifact pages?
+
+The artifact list endpoint returns at most 100 items per page. 5 pages = up to 500 artifacts; the loop stops early once a page has fewer than 100 items.
+
+### Why 2 run pages?
+
+The runs endpoint returns at most 100 runs per page. 2 pages = the 200 most recent runs, fetched in bulk to map runs to PR numbers and detect build types from run names. Artifacts from older runs are still listed, just without PR/build-type enrichment.
+
+### Why 20 job lookups?
+
+Build type comes from job/step names ("Build Windows Standalone"), but jobs have no bulk endpoint. Only runs whose name does not reveal the build type get a jobs call, capped at 20. Runs are deduplicated, so 50 artifacts from one run cost a single jobs lookup.
+
+### What is 48 GitHub calls?
+
+The absolute worst case per cache miss for the full 500 artifacts (5 list pages + 2 run pages + 20 job lookups + 1 GraphQL + 20 REST title fallback). With 200 artifacts it is 45; your repo typically uses ~4.
+
+### Per user or global?
+
+Global, server-side. Visitors never call GitHub - each makes one request to the Worker, usually a cache hit with 0 GitHub calls. The 48 calls happen once per cache miss, at most once per minute (2,880/hour worst case), under the token's 5,000/hour limit.
+
+### When does a cache miss happen?
+
+When there is no valid entry for that repo: first request after a deploy, after the 60-second TTL expired, a repo never requested before, or eviction. The cache renews lazily - if nobody requests anything, the Worker does not fetch from GitHub at all. Deleted or expired artifacts disappear within a minute of the next refresh; their download links return `404`/`410` immediately.
+
+### Will my ~10 users ever see a rate limit?
+
+No. Listing is served from cache or by the Worker's shared token (5,000/hour), not by per-visitor anonymous limits. Downloads are the only thing that could be rate-limited, at 10/minute per IP.
