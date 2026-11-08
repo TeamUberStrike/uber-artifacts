@@ -141,25 +141,23 @@ The REST API keeps each piece in a separate endpoint with no joins:
 
 GraphQL would be ideal but it does not expose artifacts or workflow runs (`Field 'artifacts' doesn't exist on type 'Repository'`), so REST is used for those and GraphQL only for PR titles.
 
-### Does one request include all data?
+### How many GitHub calls does one list build make?
 
-No. One cache miss costs roughly `1-5 list pages + 1-2 run pages + up to 20 job lookups + 1 GraphQL titles request`. Cache hits cost zero GitHub calls.
+Example: 500 active (non-expired) artifacts, the absolute worst case:
 
-### Why 5 artifact pages?
+| Step | Calls | Why |
+|---|---|---|
+| Artifact list | 5 | endpoint returns 100 per page; 500 artifacts = 5 pages |
+| Run list | 2 | 100 runs per page, 200 most recent runs, fetched in bulk to map runs to PR numbers and detect build types from run names |
+| Job lookups | 20 | build type from job/step names ("Build Windows Standalone"); no bulk endpoint, one call per run, only for runs whose name did not reveal the build type, capped at 20 |
+| PR titles (GraphQL) | 1 | one batched query for up to 100 titles |
+| PR titles (REST fallback) | up to 20 | only if the token cannot use GraphQL |
+| **Total** | **48** | |
 
-The artifact list endpoint returns at most 100 items per page. 5 pages = up to 500 artifacts; the loop stops early once a page has fewer than 100 items.
-
-### Why 2 run pages?
-
-The runs endpoint returns at most 100 runs per page. 2 pages = the 200 most recent runs, fetched in bulk to map runs to PR numbers and detect build types from run names. Artifacts from older runs are still listed, just without PR/build-type enrichment.
-
-### Why 20 job lookups?
-
-Build type comes from job/step names ("Build Windows Standalone"), but jobs have no bulk endpoint. Only runs whose name does not reveal the build type get a jobs call, capped at 20. Runs are deduplicated, so 50 artifacts from one run cost a single jobs lookup.
-
-### What is 48 GitHub calls?
-
-The absolute worst case per cache miss for the full 500 artifacts (5 list pages + 2 run pages + 20 job lookups + 1 GraphQL + 20 REST title fallback). With 200 artifacts it is 45; your repo typically uses ~4.
+- With 200 artifacts: 45 (2 list pages instead of 5).
+- Your repo (few artifacts, one run, one PR): ~4.
+- Runs are deduplicated, so 50 artifacts from one run cost a single jobs lookup.
+- Cache hits cost zero GitHub calls; a miss rebuilds once per 60 seconds at most.
 
 ### Per user or global?
 
