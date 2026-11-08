@@ -113,6 +113,13 @@ tr:hover td { background: #161b22; }
   white-space: nowrap;
 }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.meta-line {
+  margin-top: 2px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
 .muted { color: var(--muted); }
 .pr-line { margin-top: 2px; font-size: 12px; overflow-wrap: anywhere; }
 a { color: var(--accent); text-decoration: none; }
@@ -139,7 +146,6 @@ footer { padding: 0 24px 30px; color: var(--muted); font-size: 12px; }
   td { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 9px 12px; border-bottom: 1px solid var(--border); }
   td:last-child { border-bottom: 0; }
   td::before { content: attr(data-label); color: var(--muted); font-size: 12px; font-weight: 600; flex: 0 0 auto; }
-  td[data-label="Branch"] { word-break: break-all; }
   td.artifact-cell { display: block; }
   td.artifact-cell::before { display: none; }
   td.artifact-cell { padding-bottom: 10px; }
