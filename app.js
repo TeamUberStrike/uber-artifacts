@@ -39,119 +39,20 @@ function repoFromInput(value) {
     .replace(/\/+$/, '');
 }
 
-const GITHUB_API = 'https://api.github.com';
-const MAX_PAGES = 5;
-const BUILD_TYPES = [
-  ['Windows', ['windows', 'win64', 'win32', 'standalonewindows']],
-  ['Android', ['android']],
-  ['iOS', ['ios', 'iphone', 'ipad']],
-  ['Linux', ['linux', 'standalonelinux']],
-  ['macOS', ['macos', 'osx', 'mac os', 'standalonemacos']],
-  ['WebGL', ['webgl']]
-];
-
-function extractBuildHash(name) {
-  const match = /([0-9a-f]{40})$/i.exec(name || '');
-  return match ? match[1].toLowerCase() : '';
-}
-
-function detectBuildType(values) {
-  for (const value of values) {
-    const text = (value || '').toLowerCase();
-    if (!text) continue;
-    for (const [name, aliases] of BUILD_TYPES) {
-      if (aliases.some((alias) => text.includes(alias))) return name;
-    }
-  }
-  return '';
-}
-
-async function githubJson(path) {
+async function fetchArtifacts(repo) {
   let response;
   try {
-    response = await fetch(`${GITHUB_API}${path}`, { headers: { Accept: 'application/vnd.github+json' } });
+    response = await fetch(`${proxyBase}/api/artifacts/${repo}`, { headers: { Accept: 'application/json' } });
   } catch {
-    throw new Error('Cannot reach the GitHub API.');
+    throw new Error('Cannot reach the artifact proxy. Check proxyBase in config.js and the Worker deployment.');
   }
+
+  let body = null;
+  try { body = await response.json(); } catch {}
   if (!response.ok) {
-    let message = `GitHub API request failed (${response.status})`;
-    if (response.status === 403) message += ' - anonymous rate limit is 60 requests/hour per IP';
-    if (response.status === 404) message += ' - check the repository name';
-    throw new Error(message);
+    throw new Error((body && body.error) || `Proxy request failed (${response.status})`);
   }
-  return response.json();
-}
-
-async function fetchArtifacts(repo) {
-  const artifacts = [];
-  for (let page = 1; page <= MAX_PAGES; page++) {
-    const data = await githubJson(`/repos/${repo}/actions/artifacts?per_page=100&page=${page}`);
-    const pageArtifacts = data.artifacts || [];
-    artifacts.push(...pageArtifacts);
-    if (pageArtifacts.length < 100) break;
-  }
-
-  const active = artifacts.filter((artifact) => !artifact.expired);
-  active.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-
-  const runIds = [...new Set(active.map((artifact) => artifact.workflow_run && artifact.workflow_run.id).filter(Boolean))];
-  const runDetails = new Map();
-  await Promise.all(runIds.map(async (id) => {
-    const details = { pullRequests: [], buildType: '' };
-    const [runResponse, jobsResponse] = await Promise.all([
-      fetch(`${GITHUB_API}/repos/${repo}/actions/runs/${id}`, { headers: { Accept: 'application/vnd.github+json' } }).catch(() => null),
-      fetch(`${GITHUB_API}/repos/${repo}/actions/runs/${id}/jobs?per_page=100`, { headers: { Accept: 'application/vnd.github+json' } }).catch(() => null)
-    ]);
-    const candidates = [];
-    if (runResponse && runResponse.ok) {
-      try {
-        const run = await runResponse.json();
-        details.pullRequests = (run.pull_requests || []).map((pr) => ({ number: pr.number, title: '' }));
-        candidates.push(run.name, run.display_title);
-      } catch {}
-    }
-    if (jobsResponse && jobsResponse.ok) {
-      try {
-        const data = await jobsResponse.json();
-        for (const job of data.jobs || []) {
-          candidates.push(job.name);
-          for (const step of job.steps || []) candidates.push(step.name);
-        }
-      } catch {}
-    }
-    details.buildType = detectBuildType(candidates);
-    runDetails.set(id, details);
-  }));
-
-  const prNumbers = [...new Set([...runDetails.values()].flatMap((details) => details.pullRequests.map((pr) => pr.number)))];
-  const prTitles = new Map();
-  await Promise.all(prNumbers.map(async (number) => {
-    try {
-      const pr = await githubJson(`/repos/${repo}/pulls/${number}`);
-      prTitles.set(number, pr.title || '');
-    } catch {}
-  }));
-
-  return active.map((artifact) => {
-    const run = artifact.workflow_run || {};
-    const details = runDetails.get(run.id) || {};
-    return {
-      id: artifact.id,
-      name: artifact.name,
-      size_in_bytes: artifact.size_in_bytes,
-      created_at: artifact.created_at,
-      expires_at: artifact.expires_at,
-      expired: artifact.expired,
-      build_type: details.buildType || 'Unknown',
-      build_hash: extractBuildHash(artifact.name),
-      workflow_run: run.id ? {
-        id: run.id,
-        head_branch: run.head_branch || '',
-        head_sha: run.head_sha || ''
-      } : null,
-      pull_requests: (details.pullRequests || []).map((pr) => ({ number: pr.number, title: prTitles.get(pr.number) || '' }))
-    };
-  });
+  return (body && body.artifacts) || [];
 }
 
 function downloadUrl(artifact) {
