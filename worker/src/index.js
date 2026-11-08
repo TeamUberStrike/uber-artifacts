@@ -339,10 +339,8 @@ async function resolveMetadata(repo, env, runs, runIds, prNumbers, options = {})
   return { buildTypes, titles };
 }
 
-async function buildArtifactList(repo, env) {
-  const { active, runs, runIds, prNumbers } = await fetchArtifactContext(repo, env);
-  const { buildTypes, titles } = await resolveMetadata(repo, env, runs, runIds, prNumbers);
-
+function assembleArtifacts(context, buildTypes, titles) {
+  const { active, runs } = context;
   return active.map((artifact) => {
     const run = artifact.workflow_run || {};
     const info = runs.get(run.id) || {};
@@ -363,6 +361,12 @@ async function buildArtifactList(repo, env) {
       pull_requests: (info.pullRequests || []).map((number) => ({ number, title: titles.get(number) || '' }))
     };
   });
+}
+
+async function buildArtifactList(repo, env) {
+  const context = await fetchArtifactContext(repo, env);
+  const { buildTypes, titles } = await resolveMetadata(repo, env, context.runs, context.runIds, context.prNumbers);
+  return assembleArtifacts(context, buildTypes, titles);
 }
 
 async function cacheList(repo, artifacts) {
@@ -467,13 +471,14 @@ export default {
   async scheduled(event, env) {
     for (const repo of allowlist(env)) {
       try {
-        const { runs, runIds, prNumbers } = await fetchArtifactContext(repo, env);
-        await resolveMetadata(repo, env, runs, runIds, prNumbers, {
+        const context = await fetchArtifactContext(repo, env);
+        const { buildTypes, titles } = await resolveMetadata(repo, env, context.runs, context.runIds, context.prNumbers, {
           maxJobLookups: MAX_JOB_LOOKUPS_CRON,
           useRestFallback: false
         });
+        await cacheList(repo, assembleArtifacts(context, buildTypes, titles));
       } catch (error) {
-        console.error(`scheduled metadata fill failed for ${repo}:`, error);
+        console.error(`scheduled refresh failed for ${repo}:`, error);
       }
     }
   },
