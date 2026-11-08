@@ -148,6 +148,19 @@ Notes:
 - The artifact list endpoint returns 100 per page; up to 500 artifacts are listed (5 pages of 100) and expired artifacts are excluded. Runs are deduplicated, so 50 artifacts from one run cost a single run-detail and at most one jobs lookup.
 - These tables describe a cold start. With the cron running, builds are rare and start from warm 30-day caches, so the numbers shrink toward zero per build.
 - Cache hits cost zero GitHub calls. The cron's own budget per pass: 5 list pages + 20 run details + 20 job lookups + 1 GraphQL = 46 subrequests, under Cloudflare's 50.
+
+### What is Cloudflare's 50-subrequest limit?
+
+On the Workers Free plan, one Worker invocation (a single HTTP request or a single scheduled cron run) may make at most **50 subrequests** - every outbound `fetch()` the Worker code performs against another server (here: `api.github.com`) counts as one, and the invocation is cut off when the 50th is reached.
+
+What counts and what does not:
+
+- Each GitHub API call (list page, run detail, jobs, GraphQL) = 1 subrequest
+- Redirects followed by the runtime also count toward the budget
+- Cache API reads/writes (`caches.default`) do **not** count - that is why serving known runs costs nothing
+- The 50 limit applies per invocation, not per minute: two requests right after each other get two fresh budgets
+
+That is why every cap in this project (20/20 for the cron, 15/15/12 for cold-start visitor builds) exists: each total budget is sized to stay under 50, and everything else is served from the free-to-read cache.
 - Nothing above is per visitor: users make one request to the Worker and get a cache hit almost every time.
 
 Relevant limits:
