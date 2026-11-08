@@ -83,16 +83,17 @@ The site CSP only allows `https://*.workers.dev` by default. For local testing a
 ## Endpoints
 
 - `GET /health`
-- `GET /api/artifacts/:owner/:repo` - artifact list with branch, commit, run, and pull request metadata
+- `GET /api/artifacts/:owner/:repo` - artifact list with build type, branch, commit, run, and pull request title metadata
 - `GET /download/:owner/:repo/:artifactId` - streams the artifact zip (`HEAD` supported)
 
 ## Behavior and limits
 
 - Artifact lists are cached for 60 seconds using the Workers Cache API.
 - Up to 500 artifacts are listed (5 pages of 100).
-- Pull request metadata is resolved for up to 30 distinct runs per list request.
+- Build types are detected from workflow job and step names (Windows, Android, iOS, Linux, macOS, WebGL).
+- Metadata is resolved for up to 15 distinct runs, 15 job lists, and 10 pull requests per list request to stay within the Workers Free plan subrequest limit.
 - Cloudflare Workers Free plan: 100,000 requests/day, 10 ms CPU per request; downloads are streamed and have no enforced response body limit.
-- Expired artifacts return `410` and are rendered as disabled in the UI.
+- Expired artifacts are excluded from the list. The download endpoint also returns `410` for an expired artifact.
 
 ## Security notes
 

@@ -4,12 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' https://*.workers.dev; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
-<title>GitHub Actions Artifacts</title>
+<title>UberStrike artifacts</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 <header>
-  <h1>GitHub Actions Artifacts</h1>
+  <h1>UberStrike artifacts</h1>
   <form id="controls">
     <label>Repository
       <input id="repo" type="text" value="TeamUberStrike/uber-client-4-3-8" spellcheck="false" autocomplete="off">
@@ -22,14 +22,16 @@
   <input id="filter" type="search" placeholder="Filter by name, branch, PR, or commit..." disabled>
   <span id="status"></span>
 </div>
+<div id="filters" class="filters" hidden>
+  <div class="filter-group" id="build-filters"></div>
+  <div class="filter-group" id="branch-filters"></div>
+</div>
 <main>
   <table>
     <thead>
       <tr>
         <th>Artifact</th>
         <th>Branch</th>
-        <th>PR</th>
-        <th>Commit</th>
         <th>Size</th>
         <th>Created</th>
         <th>Expires</th>

@@ -1,8 +1,19 @@
 const GITHUB_API = 'https://api.github.com';
 const PAGE_SIZE = 100;
 const MAX_PAGES = 5;
-const MAX_RUN_LOOKUPS = 30;
+const MAX_RUN_LOOKUPS = 15;
+const MAX_PR_LOOKUPS = 10;
+const MAX_JOB_LOOKUPS = 15;
+const CACHE_VERSION = '3';
 const CACHE_TTL_SECONDS = 60;
+const BUILD_TYPES = [
+  ['Windows', ['windows', 'win64', 'win32', 'standalonewindows']],
+  ['Android', ['android']],
+  ['iOS', ['ios', 'iphone', 'ipad']],
+  ['Linux', ['linux', 'standalonelinux']],
+  ['macOS', ['macos', 'osx', 'mac os', 'standalonemacos']],
+  ['WebGL', ['webgl']]
+];
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -94,7 +105,18 @@ async function githubErrorMessage(response, action) {
   return `GitHub API failed to ${action} (${response.status})${detail}`;
 }
 
-async function loadPullRequests(repo, artifacts, env) {
+function detectBuildType(values) {
+  for (const value of values) {
+    const text = (value || '').toLowerCase();
+    if (!text) continue;
+    for (const [name, aliases] of BUILD_TYPES) {
+      if (aliases.some((alias) => text.includes(alias))) return name;
+    }
+  }
+  return '';
+}
+
+async function loadRunDetails(repo, artifacts, env) {
   const ids = [];
   const seen = new Set();
   for (const artifact of artifacts) {
@@ -106,19 +128,55 @@ async function loadPullRequests(repo, artifacts, env) {
   }
 
   const map = new Map();
-  await Promise.all(ids.map(async (id) => {
-    try {
-      const response = await githubFetch(env, `/repos/${repo}/actions/runs/${id}`);
-      if (!response.ok) {
-        map.set(id, []);
-        return;
-      }
-      const run = await response.json();
-      map.set(id, (run.pull_requests || []).map((pr) => ({ number: pr.number })));
-    } catch {
-      map.set(id, []);
+  await Promise.all(ids.map(async (id, index) => {
+    const details = { pullRequests: [], buildType: '' };
+    const requests = [githubFetch(env, `/repos/${repo}/actions/runs/${id}`)];
+    if (index < MAX_JOB_LOOKUPS) {
+      requests.push(githubFetch(env, `/repos/${repo}/actions/runs/${id}/jobs?per_page=100`));
     }
+    const [runResponse, jobsResponse] = await Promise.all(requests.map((promise) => promise.catch(() => null)));
+    const candidates = [];
+
+    if (runResponse && runResponse.ok) {
+      try {
+        const run = await runResponse.json();
+        details.pullRequests = (run.pull_requests || []).map((pr) => ({ number: pr.number }));
+        candidates.push(run.name, run.display_title);
+      } catch {}
+    }
+
+    if (jobsResponse && jobsResponse.ok) {
+      try {
+        const data = await jobsResponse.json();
+        for (const job of data.jobs || []) {
+          candidates.push(job.name);
+          for (const step of job.steps || []) candidates.push(step.name);
+        }
+      } catch {}
+    }
+
+    details.buildType = detectBuildType(candidates);
+    map.set(id, details);
   }));
+
+  const numbers = new Set();
+  for (const details of map.values()) {
+    for (const pr of details.pullRequests) numbers.add(pr.number);
+  }
+
+  const titles = new Map();
+  await Promise.all([...numbers].slice(0, MAX_PR_LOOKUPS).map(async (number) => {
+    try {
+      const response = await githubFetch(env, `/repos/${repo}/pulls/${number}`);
+      if (!response.ok) return;
+      const pullRequest = await response.json();
+      titles.set(number, pullRequest.title || '');
+    } catch {}
+  }));
+
+  for (const details of map.values()) {
+    details.pullRequests = details.pullRequests.map((pr) => ({ number: pr.number, title: titles.get(pr.number) || '' }));
+  }
   return map;
 }
 
@@ -136,10 +194,12 @@ async function buildArtifactList(repo, env) {
   }
 
   artifacts.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-  const pullRequests = await loadPullRequests(repo, artifacts, env);
+  const activeArtifacts = artifacts.filter((artifact) => !artifact.expired);
+  const runDetails = await loadRunDetails(repo, activeArtifacts, env);
 
-  return artifacts.map((artifact) => {
+  return activeArtifacts.map((artifact) => {
     const run = artifact.workflow_run || null;
+    const details = (run && runDetails.get(run.id)) || { pullRequests: [], buildType: '' };
     return {
       id: artifact.id,
       name: artifact.name,
@@ -147,12 +207,13 @@ async function buildArtifactList(repo, env) {
       expired: artifact.expired,
       created_at: artifact.created_at,
       expires_at: artifact.expires_at,
+      build_type: details.buildType || 'Unknown',
       workflow_run: run ? {
         id: run.id,
         head_branch: run.head_branch,
         head_sha: run.head_sha
       } : null,
-      pull_requests: (run && pullRequests.get(run.id)) || []
+      pull_requests: details.pullRequests
     };
   });
 }
@@ -164,7 +225,7 @@ async function listHandler(request, env, ctx, repo) {
 
   const cache = typeof caches !== 'undefined' ? caches.default : null;
   if (cache) {
-    const key = new Request(`https://artifacts-proxy.invalid/list/${repo.toLowerCase()}`, { method: 'GET' });
+    const key = new Request(`https://artifacts-proxy.invalid/${CACHE_VERSION}/list/${repo.toLowerCase()}`, { method: 'GET' });
     const cached = await cache.match(key);
     if (cached) {
       const headers = new Headers(cached.headers);
@@ -177,7 +238,7 @@ async function listHandler(request, env, ctx, repo) {
   const response = jsonResponse(request, env, { repo, artifacts }, 200, CACHE_TTL_SECONDS);
 
   if (cache) {
-    const key = new Request(`https://artifacts-proxy.invalid/list/${repo.toLowerCase()}`, { method: 'GET' });
+    const key = new Request(`https://artifacts-proxy.invalid/${CACHE_VERSION}/list/${repo.toLowerCase()}`, { method: 'GET' });
     const cacheable = new Response(JSON.stringify({ repo, artifacts }), {
       status: 200,
       headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': `public, max-age=${CACHE_TTL_SECONDS}` }
