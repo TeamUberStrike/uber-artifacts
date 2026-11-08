@@ -143,21 +143,29 @@ GraphQL would be ideal but it does not expose artifacts or workflow runs (`Field
 
 ### How many GitHub calls does one list build make?
 
-Example: 500 active (non-expired) artifacts, the absolute worst case:
+Worst case per artifact count (all active artifacts, each from its own run, build type not visible in run names, GraphQL unavailable so the REST title fallback is used):
 
-| Step | Calls | Why |
-|---|---|---|
-| Artifact list | 5 | endpoint returns 100 per page; 500 artifacts = 5 pages |
-| Run list | 2 | 100 runs per page, 200 most recent runs, fetched in bulk to map runs to PR numbers and detect build types from run names |
-| Job lookups | 20 | build type from job/step names ("Build Windows Standalone"); no bulk endpoint, one call per run, only for runs whose name did not reveal the build type, capped at 20 |
-| PR titles (GraphQL) | 1 | one batched query for up to 100 titles |
-| PR titles (REST fallback) | up to 20 | only if the token cannot use GraphQL |
-| **Total** | **48** | |
+| Artifacts | List pages | Run pages | Job lookups | GraphQL titles | REST title fallback | Total |
+|---|---|---|---|---|---|---|
+| 10 | 1 | 2 | 10 | 1 | 10 | **24** |
+| 50 | 1 | 2 | 20 (cap) | 1 | 20 (cap) | **44** |
+| 200 | 2 | 2 | 20 (cap) | 1 | 20 (cap) | **45** |
+| 500 | 5 | 2 | 20 (cap) | 1 | 20 (cap) | **48** |
 
-- With 200 artifacts: 45 (2 list pages instead of 5).
-- Your repo (few artifacts, one run, one PR): ~4.
-- Runs are deduplicated, so 50 artifacts from one run cost a single jobs lookup.
-- Cache hits cost zero GitHub calls; a miss rebuilds once per 60 seconds at most.
+Typical case (GraphQL works, build types visible in run names): 10 artifacts = ~14, 50 = ~24, 200 = ~25, 500 = ~28.
+
+Notes:
+
+- The artifact list endpoint returns 100 per page; run pages cover the 200 most recent runs; job lookups are one per run and capped at 20; PR titles are batched into one GraphQL request (REST fallback capped at 20). Runs are deduplicated, so 50 artifacts from one run cost a single jobs lookup.
+- Cache hits cost zero GitHub calls. A miss happens at most once per 60 seconds, so the worst case per hour is the table total x 60: 500 artifacts = 2,880 calls/hour.
+- Nothing above is per visitor: users make one request to the Worker and get a cache hit most of the time.
+
+Relevant limits:
+
+- GitHub API (fine-grained token): **5,000 requests/hour** - shared by all visitors. Worst case above (2,880/hour) stays under it.
+- Cloudflare Workers Free plan: **100,000 requests/day**, **10 ms CPU** per request, **50 subrequests** per request. The 48-call worst case fits under 50.
+- Per-IP rate limits in the Worker: **30 list requests/minute** and **10 downloads/minute**, returning `429` with `Retry-After`.
+- Cache TTL: **60 seconds** (Cloudflare edge + Worker Cache API).
 
 ### Per user or global?
 
