@@ -1,0 +1,10 @@
+name = "uber-artifacts-proxy"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+[triggers]
+crons = ["* * * * *"]
+
+[vars]
+ALLOWED_REPOS = "TeamUberStrike/uber-client-4-3-8"
+ALLOWED_ORIGINS = "*"
