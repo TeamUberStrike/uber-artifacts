@@ -116,9 +116,14 @@ function render() {
 
   $('rows').innerHTML = visible.map((a) => {
     const run = a.workflow_run || {};
-    const shortSha = run.head_sha ? run.head_sha.slice(0, 7) : '';
+    const buildHash = a.build_hash || run.head_sha || '';
+    const shortSha = buildHash.slice(0, 7);
     const runLink = run.id ? `<a class="mono" href="https://github.com/${esc(state.repo)}/actions/runs/${run.id}" target="_blank" rel="noopener">#${run.id}</a>` : '<span class="muted">n/a</span>';
-    const shaLink = shortSha && run.id ? `<a class="mono" href="https://github.com/${esc(state.repo)}/commit/${esc(run.head_sha)}" target="_blank" rel="noopener">${esc(shortSha)}</a>` : `<span class="mono muted">${esc(shortSha)}</span>`;
+    const shaLink = shortSha && run.id ? `<a class="mono" href="https://github.com/${esc(state.repo)}/commit/${esc(buildHash)}" target="_blank" rel="noopener" title="${esc(buildHash)}">${esc(shortSha)}</a>` : `<span class="mono muted">${esc(shortSha)}</span>`;
+    const branchLink = run.head_branch ? `<a class="mono" href="https://github.com/${esc(state.repo)}/tree/${esc(run.head_branch)}" target="_blank" rel="noopener">${esc(run.head_branch)}</a>` : '';
+    const metaLine = run.id
+      ? `run ${runLink}${shortSha ? ' \u00b7 ' + shaLink : ''}${branchLink ? ' \u00b7 ' + branchLink : ''}`
+      : 'run n/a';
     const prs = (a.pull_requests || []).filter(Boolean);
     const prLine = prs.length
       ? `<div class="pr-line">${prs.map((pr) => {
@@ -131,10 +136,9 @@ function render() {
       <tr>
         <td class="artifact-cell" data-label="Artifact">
           <div class="name"><a href="${esc(url)}" title="Download artifact">${esc(a.name)}</a> <span class="badge">${esc(a.build_type || 'Unknown')}</span></div>
-          <div class="muted mono">${run.id ? `run ${runLink}${shortSha ? ' \u00b7 ' + shaLink : ''}` : 'run n/a'}</div>
+          <div class="meta-line">${metaLine}</div>
           ${prLine}
         </td>
-        <td data-label="Branch">${run.head_branch ? `<a href="https://github.com/${esc(state.repo)}/tree/${esc(run.head_branch)}" target="_blank" rel="noopener">${esc(run.head_branch)}</a>` : '<span class="muted">n/a</span>'}</td>
         <td class="muted" data-label="Size">${esc(fmtBytes(a.size_in_bytes))}</td>
         <td class="muted" data-label="Created">${esc(fmtDate(a.created_at))}</td>
         <td class="muted" data-label="Expires">${esc(fmtDate(a.expires_at))}</td>

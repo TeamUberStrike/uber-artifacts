@@ -4,7 +4,7 @@ const MAX_PAGES = 5;
 const MAX_RUN_LOOKUPS = 15;
 const MAX_PR_LOOKUPS = 10;
 const MAX_JOB_LOOKUPS = 15;
-const CACHE_VERSION = '3';
+const CACHE_VERSION = '4';
 const CACHE_TTL_SECONDS = 60;
 const BUILD_TYPES = [
   ['Windows', ['windows', 'win64', 'win32', 'standalonewindows']],
@@ -103,6 +103,11 @@ async function githubErrorMessage(response, action) {
     if (body && body.message) detail = `: ${body.message}`;
   } catch {}
   return `GitHub API failed to ${action} (${response.status})${detail}`;
+}
+
+function extractBuildHash(name) {
+  const match = /([0-9a-f]{40})$/i.exec(name || '');
+  return match ? match[1].toLowerCase() : '';
 }
 
 function detectBuildType(values) {
@@ -208,6 +213,7 @@ async function buildArtifactList(repo, env) {
       created_at: artifact.created_at,
       expires_at: artifact.expires_at,
       build_type: details.buildType || 'Unknown',
+      build_hash: extractBuildHash(artifact.name),
       workflow_run: run ? {
         id: run.id,
         head_branch: run.head_branch,
