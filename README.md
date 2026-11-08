@@ -64,6 +64,8 @@ The Worker is now live at `https://uber-artifacts-proxy.<your-subdomain>.workers
 
 5. (Optional) attach a custom domain to the Worker (e.g. `proxy.uberstrike.com`), then add it to the `connect-src` directive of the site CSP in `site/index.html`.
 
+The Worker can also be deployed automatically from CI: `.github/workflows/deploy-worker.yml` runs on every push to `main` that touches `worker/` (and on manual dispatch). It needs two repository secrets: `CLOUDFLARE_API_TOKEN` (Cloudflare API token with Workers edit permission on the account) and `CLOUDFLARE_ACCOUNT_ID`.
+
 ## Custom domain
 
 The Pages site is configured for `artifacts.uberstrike.com`. GitHub Pages with a custom Actions workflow ignores `CNAME` files, so the domain is stored in the repository Pages settings (already applied via the API).
