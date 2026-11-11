@@ -86,11 +86,11 @@ function groupKey(artifact) {
 }
 
 function commonName(artifacts) {
-  if (artifacts.length === 1) return artifacts[0].name || '';
   const cleaned = artifacts.map((a) => String(a.name || '')
     .replace(/\.zip$/i, '')
     .replace(/[0-9a-f]{40}$/i, '')
-    .replace(/\b(windows|win64|win32|android|ios|iphone|ipad|linux|macos|osx|mac os|webgl|standalonewindows|standalonelinux|standalonemacos)\b/gi, '')
+    .replace(/^([^\-_.]+[\-_.])?(?:windows|win64|win32|android|ios|iphone|ipad|linux|macos|osx|mac os|webgl|standalonewindows|standalonelinux|standalonemacos)(?=[\-_.])/i, '$1')
+    .replace(/^[-_.]+/, '')
     .replace(/([-_.])\1+/g, '$1')
     .replace(/[-_.]+$/g, ''));
   let prefix = cleaned[0];
@@ -240,10 +240,11 @@ function render() {
       return `<a class="variant variant-${cls}" href="${esc(downloadUrl(a))}" title="Download ${esc(type)} (${esc(fmtBytes(a.size_in_bytes))})">${label}${downloadIcon}</a>`;
     }).join('');
 
-    const nameText = esc(commonName(artifacts) || 'Build');
+    const base = commonName(artifacts) || 'Build';
+    const displayName = hash ? `${base}.${hash}` : base;
     const nameHtml = runs.length === 1
-      ? `<a href="${runUrl(runs[0].id)}" target="_blank" rel="noopener" title="View workflow run">${nameText}</a>`
-      : nameText;
+      ? `<a href="${runUrl(runs[0].id)}" target="_blank" rel="noopener" title="View workflow run">${esc(displayName)}</a>`
+      : esc(displayName);
 
     const created = artifacts.map((a) => a.created_at).filter(Boolean).sort()[0] || '';
     const expires = artifacts.map((a) => a.expires_at).filter(Boolean).sort()[0] || '';
