@@ -69,9 +69,11 @@ const TYPE_PATTERNS = [
 ];
 
 function typeFromName(name) {
-  const text = (name || '').toLowerCase();
+  const match = /^(?:[^\-_.]+[\-_.])?(windows|win64|win32|android|ios|iphone|ipad|linux|macos|osx|mac os|webgl|standalonewindows|standalonelinux|standalonemacos)(?=[\-_.])/i.exec(name || '');
+  const token = match && match[1].toLowerCase();
+  if (!token) return '';
   for (const [type, aliases] of TYPE_PATTERNS) {
-    if (aliases.some((alias) => text.includes(alias))) return type;
+    if (aliases.includes(token)) return type;
   }
   return '';
 }
