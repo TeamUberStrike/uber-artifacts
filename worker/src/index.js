@@ -347,7 +347,7 @@ function assembleArtifacts(context, runInfo, titles) {
       created_at: artifact.created_at,
       expires_at: artifact.expires_at,
       expired: artifact.expired,
-      build_type: info.buildType || 'Unknown',
+      build_type: detectBuildType([artifact.name]) || info.buildType || 'Unknown',
       build_hash: extractBuildHash(artifact.name),
       workflow_run: run.id ? {
         id: run.id,
