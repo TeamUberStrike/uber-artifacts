@@ -59,6 +59,78 @@ function downloadUrl(artifact) {
   return `${proxyBase}/download/${state.repo}/${artifact.id}`;
 }
 
+const TYPE_PATTERNS = [
+  ['Windows', ['windows', 'win64', 'win32', 'standalonewindows']],
+  ['Android', ['android']],
+  ['iOS', ['ios', 'iphone', 'ipad']],
+  ['Linux', ['linux', 'standalonelinux']],
+  ['macOS', ['macos', 'osx', 'mac os', 'standalonemacos']],
+  ['WebGL', ['webgl']]
+];
+
+function typeFromName(name) {
+  const match = /^(?:[^\-_.]+[\-_.])?(windows|win64|win32|android|ios|iphone|ipad|linux|macos|osx|mac os|webgl|standalonewindows|standalonelinux|standalonemacos)(?=[\-_.])/i.exec(name || '');
+  const token = match && match[1].toLowerCase();
+  if (!token) return '';
+  for (const [type, aliases] of TYPE_PATTERNS) {
+    if (aliases.includes(token)) return type;
+  }
+  return '';
+}
+
+const PLATFORM_ORDER = ['Windows', 'Android', 'iOS', 'Linux', 'macOS', 'WebGL'];
+
+function groupKey(artifact) {
+  if (artifact.build_hash) return artifact.build_hash;
+  const run = artifact.workflow_run || {};
+  if (run.id) return `run-${run.id}`;
+  return `artifact-${artifact.id}`;
+}
+
+function commonName(artifacts) {
+  const cleaned = artifacts.map((a) => String(a.name || '')
+    .replace(/\.zip$/i, '')
+    .replace(/[0-9a-f]{40}$/i, '')
+    .replace(/^([^\-_.]+[\-_.])?(?:windows|win64|win32|android|ios|iphone|ipad|linux|macos|osx|mac os|webgl|standalonewindows|standalonelinux|standalonemacos)(?=[\-_.])/i, '$1')
+    .replace(/^[-_.]+/, '')
+    .replace(/([-_.])\1+/g, '$1')
+    .replace(/[-_.]+$/g, ''));
+  let prefix = cleaned[0];
+  for (const name of cleaned.slice(1)) {
+    let i = 0;
+    while (i < prefix.length && i < name.length && prefix[i] === name[i]) i++;
+    prefix = prefix.slice(0, i);
+    if (!prefix) break;
+  }
+  return prefix.replace(/[-_.]+$/g, '');
+}
+
+function groupArtifacts(active) {
+  const groups = [];
+  const byKey = new Map();
+  for (const artifact of active) {
+    const key = groupKey(artifact);
+    let group = byKey.get(key);
+    if (!group) {
+      group = { key, artifacts: [], prs: new Map() };
+      byKey.set(key, group);
+      groups.push(group);
+    }
+    group.artifacts.push(artifact);
+    for (const pr of (artifact.pull_requests || [])) {
+      if (pr.number && !group.prs.has(pr.number)) group.prs.set(pr.number, pr);
+    }
+  }
+  for (const group of groups) {
+    group.artifacts.sort((x, y) => {
+      const ix = PLATFORM_ORDER.indexOf(x.build_type);
+      const iy = PLATFORM_ORDER.indexOf(y.build_type);
+      return (ix === -1 ? PLATFORM_ORDER.length : ix) - (iy === -1 ? PLATFORM_ORDER.length : iy);
+    });
+  }
+  return groups;
+}
+
 function chip(kind, value, label, active) {
   return `<button type="button" class="chip${active ? ' active' : ''}" data-kind="${kind}" data-value="${esc(value)}" aria-pressed="${active ? 'true' : 'false'}">${esc(label)}</button>`;
 }
@@ -104,57 +176,103 @@ function renderFilters(active) {
 function render() {
   const term = $('filter').value.trim().toLowerCase();
   const active = state.artifacts.filter((a) => !a.expired);
-  const visible = active.filter((a) => {
-    const run = a.workflow_run || {};
-    if (state.buildFilter && (a.build_type || 'Unknown') !== state.buildFilter) return false;
-    if (state.branchFilter && run.head_branch !== state.branchFilter) return false;
+  const groups = groupArtifacts(active);
+  const visible = groups.filter((group) => {
+    if (state.buildFilter && !group.artifacts.some((a) => (a.build_type || 'Unknown') === state.buildFilter)) return false;
+    if (state.branchFilter && !group.artifacts.some((a) => (a.workflow_run || {}).head_branch === state.branchFilter)) return false;
     if (!term) return true;
-    const prText = (a.pull_requests || []).map((pr) => `#${pr.number} ${pr.title || ''}`).join(' ');
-    return [a.name, run.head_branch, run.head_sha, a.build_type, prText].some((v) => (v || '').toLowerCase().includes(term));
+    return group.artifacts.some((a) => {
+      const run = a.workflow_run || {};
+      const prText = (a.pull_requests || []).map((pr) => `#${pr.number} ${pr.title || ''}`).join(' ');
+      return [a.name, run.head_branch, run.head_sha, a.build_type, prText].some((v) => (v || '').toLowerCase().includes(term));
+    });
   });
 
   renderFilters(active);
 
-  $('rows').innerHTML = visible.map((a) => {
-    const run = a.workflow_run || {};
-    const buildHash = a.build_hash || run.head_sha || '';
-    const shortSha = buildHash.slice(0, 7);
-    const runLink = run.id ? `<a class="mono" href="https://github.com/${esc(state.repo)}/actions/runs/${run.id}" target="_blank" rel="noopener">#${run.id}</a>` : '<span class="muted">n/a</span>';
-    const shaLink = shortSha && run.id ? `<a class="mono" href="https://github.com/${esc(state.repo)}/commit/${esc(buildHash)}" target="_blank" rel="noopener" title="${esc(buildHash)}">${esc(shortSha)}</a>` : `<span class="mono muted">${esc(shortSha)}</span>`;
-    const branchLink = run.head_branch ? `<a class="mono" href="https://github.com/${esc(state.repo)}/tree/${esc(run.head_branch)}" target="_blank" rel="noopener">${esc(run.head_branch)}</a>` : '';
-    const metaLine = run.id
-      ? `run ${runLink}${shortSha ? ' \u00b7 ' + shaLink : ''}${branchLink ? ' \u00b7 ' + branchLink : ''}`
-      : 'run n/a';
-    const prs = (a.pull_requests || []).filter(Boolean);
+  $('rows').innerHTML = visible.map((group) => {
+    const artifacts = group.artifacts;
+    const runInfos = new Map();
+    for (const a of artifacts) {
+      const run = a.workflow_run || {};
+      if (run.id && !runInfos.has(run.id)) runInfos.set(run.id, run);
+    }
+    const runs = [...runInfos.values()];
+    const hashed = artifacts.find((a) => a.build_hash);
+    const hash = (/^[0-9a-f]{40}$/.test(group.key) ? group.key : '') || (hashed && hashed.build_hash) || '';
+    const shortSha = hash.slice(0, 7);
+    const branch = runs.find((run) => run.head_branch) || {};
+    const branchName = branch.head_branch || '';
+    const runUrl = (id) => `https://github.com/${esc(state.repo)}/actions/runs/${id}`;
+    const shaLink = hash
+      ? `<a class="mono" href="https://github.com/${esc(state.repo)}/commit/${esc(hash)}" target="_blank" rel="noopener" title="${esc(hash)}">${esc(shortSha)}</a>`
+      : '';
+    const branchLink = branchName
+      ? `<a class="mono" href="https://github.com/${esc(state.repo)}/tree/${esc(branchName)}" target="_blank" rel="noopener">${esc(branchName)}</a>`
+      : '';
+
+    let metaLine;
+    if (!runs.length) {
+      metaLine = 'run n/a';
+    } else if (runs.length === 1) {
+      const runLink = `<a class="mono" href="${runUrl(runs[0].id)}" target="_blank" rel="noopener">#${runs[0].id}</a>`;
+      metaLine = `run ${runLink}${hash ? ' \u00b7 ' + shaLink : ''}${branchLink ? ' \u00b7 ' + branchLink : ''}`;
+    } else {
+      const runLinks = runs.map((run) => `<a class="mono" href="${runUrl(run.id)}" target="_blank" rel="noopener">#${run.id}</a>`).join(' ');
+      metaLine = `runs ${runLinks}${hash ? ' \u00b7 ' + shaLink : ''}${branchLink ? ' \u00b7 ' + branchLink : ''}`;
+    }
+
+    const prs = [...group.prs.values()];
     const prLine = prs.length
       ? `<div class="pr-line">${prs.map((pr) => {
           const label = pr.title ? `PR #${pr.number} \u00b7 ${esc(pr.title)}` : `PR #${pr.number}`;
           return `<a href="https://github.com/${esc(state.repo)}/pull/${pr.number}" target="_blank" rel="noopener">${label}</a>`;
         }).join('<br>')}</div>`
       : '';
-    const url = downloadUrl(a);
+
+    const typeCounts = new Map();
+    for (const a of artifacts) {
+      const type = a.build_type || 'Unknown';
+      typeCounts.set(type, (typeCounts.get(type) || 0) + 1);
+    }
+    const markers = artifacts.map((a) => {
+      const type = a.build_type || 'Unknown';
+      const cls = type.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      const label = typeCounts.get(type) > 1 ? `${esc(type)} \u00b7 ${esc(fmtBytes(a.size_in_bytes))}` : esc(type);
+      return `<a class="variant variant-${cls}" href="${esc(downloadUrl(a))}" title="Download ${esc(type)} (${esc(fmtBytes(a.size_in_bytes))})">${label}${downloadIcon}</a>`;
+    }).join('');
+
+    const base = commonName(artifacts) || 'Build';
+    const displayName = hash ? `${base}.${hash}` : base;
+    const nameHtml = runs.length === 1
+      ? `<a href="${runUrl(runs[0].id)}" target="_blank" rel="noopener" title="View workflow run">${esc(displayName)}</a>`
+      : esc(displayName);
+
+    const created = artifacts.map((a) => a.created_at).filter(Boolean).sort()[0] || '';
+    const expires = artifacts.map((a) => a.expires_at).filter(Boolean).sort()[0] || '';
+
     return `
       <tr>
         <td class="artifact-cell" data-label="Artifact">
-          <div class="name"><a href="${esc(url)}" title="Download artifact">${esc(a.name)}${downloadIcon}</a> <span class="badge badge-${esc((a.build_type || 'Unknown').toLowerCase())}">${esc(a.build_type || 'Unknown')}</span></div>
+          <div class="name">${nameHtml}</div>
           <div class="meta-line">${metaLine}</div>
           ${prLine}
+          <div class="variants">${markers}</div>
         </td>
-        <td class="muted" data-label="Size">${esc(fmtBytes(a.size_in_bytes))}</td>
-        <td class="muted" data-label="Created">${esc(fmtDate(a.created_at))}</td>
-        <td class="muted" data-label="Expires">${esc(fmtDate(a.expires_at))}</td>
+        <td class="muted" data-label="Created">${esc(fmtDate(created))}</td>
+        <td class="muted" data-label="Expires">${esc(fmtDate(expires))}</td>
       </tr>`;
   }).join('');
 
   const empty = $('empty');
-  empty.hidden = state.error || visible.length !== 0 || active.length !== 0;
-  $('empty-text').textContent = 'No artifacts available.';
-  $('filter').disabled = active.length === 0;
+  empty.hidden = state.error || visible.length !== 0 || groups.length !== 0;
+  $('empty-text').textContent = 'No builds available.';
+  $('filter').disabled = groups.length === 0;
 
   if (!state.error) {
-    setStatus(visible.length === active.length
-      ? `${active.length} artifact${active.length === 1 ? '' : 's'}`
-      : `${visible.length} of ${active.length} artifacts`);
+    setStatus(visible.length === groups.length
+      ? `${groups.length} build${groups.length === 1 ? '' : 's'}`
+      : `${visible.length} of ${groups.length} builds`);
   }
 }
 
@@ -183,7 +301,11 @@ async function load() {
   else localStorage.removeItem('ghArtifacts.repo');
 
   try {
-    state.artifacts = await fetchArtifacts(repo);
+    state.artifacts = (await fetchArtifacts(repo)).map((artifact) => {
+      const type = typeFromName(artifact.name);
+      if (type) artifact.build_type = type;
+      return artifact;
+    });
     render();
   } catch (error) {
     state.artifacts = [];

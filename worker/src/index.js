@@ -148,6 +148,16 @@ function detectBuildType(values) {
   return '';
 }
 
+function detectBuildTypeFromName(name) {
+  const match = /^(?:[^\-_.]+[\-_.])?(windows|win64|win32|android|ios|iphone|ipad|linux|macos|osx|mac os|webgl|standalonewindows|standalonelinux|standalonemacos)(?=[\-_.])/i.exec(name || '');
+  if (!match) return '';
+  const token = match[1].toLowerCase();
+  for (const [type, aliases] of BUILD_TYPES) {
+    if (aliases.includes(token)) return type;
+  }
+  return '';
+}
+
 function extractBuildHash(name) {
   const match = /([0-9a-f]{40})$/i.exec(name || '');
   return match ? match[1].toLowerCase() : '';
@@ -347,7 +357,7 @@ function assembleArtifacts(context, runInfo, titles) {
       created_at: artifact.created_at,
       expires_at: artifact.expires_at,
       expired: artifact.expired,
-      build_type: info.buildType || 'Unknown',
+      build_type: detectBuildTypeFromName(artifact.name) || info.buildType || 'Unknown',
       build_hash: extractBuildHash(artifact.name),
       workflow_run: run.id ? {
         id: run.id,
