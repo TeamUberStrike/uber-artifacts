@@ -292,7 +292,10 @@ function render() {
 
     const prs = [...group.prs.values()];
     const prLine = prs.length
-      ? `<div class="pr-line">${prs.map((pr) => pr.title ? `PR #${esc(pr.number)} \u00b7 ${esc(pr.title)}` : `PR #${esc(pr.number)}`).join('<br>')}</div>`
+      ? `<div class="pr-line">${prs.map((pr) => {
+          const label = pr.title ? `PR #${pr.number} \u00b7 ${esc(pr.title)}` : `PR #${pr.number}`;
+          return `<a href="https://github.com/${esc(state.repo)}/pull/${pr.number}" target="_blank" rel="noopener">${label}</a>`;
+        }).join('<br>')}</div>`
       : '';
 
     const typeCounts = new Map();
@@ -309,7 +312,7 @@ function render() {
 
     const base = commonName(artifacts) || 'Build';
     const displayName = hash ? `${base}.${hash}` : base;
-    const copyButton = `<button type="button" class="copy-link" data-key="${esc(group.key)}" title="Copy link to this build" aria-label="Copy link to this build">${copyIcon}</button>`;
+    const copyButton = `<button type="button" class="copy-link" data-key="${esc(group.key)}" title="Copy link to this build" aria-label="Copy link to this build">${copyIcon}<span class="copy-label">Copy Link</span></button>`;
     const nameHtml = `${esc(displayName)}${copyButton}`;
 
     const created = artifacts.map((a) => a.created_at).filter(Boolean).sort()[0] || '';
@@ -395,11 +398,14 @@ $('rows').addEventListener('click', async (event) => {
   const group = state.groups.find((item) => item.key === button.dataset.key);
   if (!group) return;
   const copied = await copyText(itemUrl(group));
+  const label = button.querySelector('.copy-label');
   button.classList.toggle('copied', copied);
   button.title = copied ? 'Link copied' : 'Copy failed';
+  if (label) label.textContent = copied ? 'Copied' : 'Copy Link';
   setTimeout(() => {
     button.classList.remove('copied');
     button.title = 'Copy link to this build';
+    if (label) label.textContent = 'Copy Link';
   }, 1500);
 });
 
