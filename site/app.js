@@ -2,8 +2,17 @@ const config = window.ARTIFACTS_CONFIG || {};
 const proxyBase = String(config.proxyBase || '').replace(/\/+$/, '');
 const defaultRepo = config.defaultRepo || 'TeamUberStrike/uber-client-4-3-8';
 const $ = (id) => document.getElementById(id);
-const state = { repo: '', artifacts: [], buildFilter: '', branchFilter: '', error: false };
+const initialParams = new URLSearchParams(location.search);
+const state = {
+  repo: '',
+  artifacts: [],
+  buildFilter: initialParams.get('build') || '',
+  branchFilter: initialParams.get('branch') || '',
+  groups: [],
+  error: false
+};
 const downloadIcon = '<svg class="dl-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor" aria-hidden="true"><path d="M7.47 10.78a.75.75 0 0 0 1.06 0l3.75-3.75a.75.75 0 0 0-1.06-1.06L8.75 8.44V1.75a.75.75 0 0 0-1.5 0v6.69L4.78 5.97a.75.75 0 0 0-1.06 1.06l3.75 3.75ZM3.75 13a.75.75 0 0 0 0 1.5h8.5a.75.75 0 0 0 0-1.5h-8.5Z"/></svg>';
+const copyIcon = '<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/></svg>';
 
 function fmtBytes(bytes) {
   if (!Number.isFinite(bytes)) return '';
@@ -37,6 +46,41 @@ function repoFromInput(value) {
     .replace(/^https:\/\/github\.com\//, '')
     .replace(/\.git$/, '')
     .replace(/\/+$/, '');
+}
+
+function selectedBuilds() {
+  return state.buildFilter ? state.buildFilter.split(',').filter(Boolean) : [];
+}
+
+function syncUrl() {
+  if (!state.repo) return;
+  const params = new URLSearchParams();
+  params.set('repo', state.repo);
+  if (state.branchFilter) params.set('branch', state.branchFilter);
+  if (state.buildFilter) params.set('build', state.buildFilter);
+  const term = $('filter').value.trim();
+  if (term) params.set('q', term);
+  const query = params.toString();
+  history.replaceState(null, '', `${location.pathname}${query ? `?${query}` : ''}${location.hash}`);
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    let copied = false;
+    try { copied = document.execCommand('copy'); } catch {}
+    area.remove();
+    return copied;
+  }
 }
 
 async function fetchArtifacts(repo) {
@@ -85,6 +129,28 @@ function groupKey(artifact) {
   const run = artifact.workflow_run || {};
   if (run.id) return `run-${run.id}`;
   return `artifact-${artifact.id}`;
+}
+
+function groupHash(group) {
+  const hashed = group.artifacts.find((artifact) => artifact.build_hash);
+  return (/^[0-9a-f]{40}$/.test(group.key) ? group.key : '') || (hashed && hashed.build_hash) || '';
+}
+
+function itemUrl(group) {
+  const params = new URLSearchParams();
+  params.set('repo', state.repo);
+  const runs = group.artifacts.map((artifact) => artifact.workflow_run || {});
+  const branch = runs.find((run) => run.head_branch);
+  if (branch) params.set('branch', branch.head_branch);
+  const types = [...new Set(group.artifacts.map((artifact) => artifact.build_type || 'Unknown'))];
+  if (types.length) params.set('build', types.join(','));
+  const runId = (runs.find((run) => run.id) || {}).id;
+  const isolate = groupHash(group) || (runId ? String(runId) : '');
+  if (isolate) params.set('q', isolate);
+  const url = new URL(location.href);
+  url.search = params.toString();
+  url.hash = '';
+  return url.toString();
 }
 
 function commonName(artifacts) {
@@ -153,13 +219,14 @@ function renderFilters(active) {
   }
   const branches = [...branchSet].sort((a, b) => a === 'main' ? -1 : b === 'main' ? 1 : a.localeCompare(b));
 
-  if (state.buildFilter && !types.includes(state.buildFilter)) state.buildFilter = '';
+  const selected = selectedBuilds().filter((type) => types.includes(type));
+  state.buildFilter = selected.join(',');
   if (state.branchFilter && !branches.includes(state.branchFilter)) state.branchFilter = '';
 
   $('build-filters').innerHTML =
     '<span class="filter-label">Build</span>' +
-    chip('build', '', 'All', state.buildFilter === '') +
-    types.map((type) => chip('build', type, type, state.buildFilter === type)).join('');
+    chip('build', '', 'All', selected.length === 0) +
+    types.map((type) => chip('build', type, type, selected.includes(type))).join('');
   const otherBranches = branches.filter((branch) => branch !== 'main');
   const selectValue = state.branchFilter !== 'main' && otherBranches.includes(state.branchFilter) ? state.branchFilter : '';
   $('branch-filters').innerHTML =
@@ -177,14 +244,16 @@ function render() {
   const term = $('filter').value.trim().toLowerCase();
   const active = state.artifacts.filter((a) => !a.expired);
   const groups = groupArtifacts(active);
+  state.groups = groups;
+  const builds = selectedBuilds();
   const visible = groups.filter((group) => {
-    if (state.buildFilter && !group.artifacts.some((a) => (a.build_type || 'Unknown') === state.buildFilter)) return false;
+    if (builds.length && !group.artifacts.some((a) => builds.includes(a.build_type || 'Unknown'))) return false;
     if (state.branchFilter && !group.artifacts.some((a) => (a.workflow_run || {}).head_branch === state.branchFilter)) return false;
     if (!term) return true;
     return group.artifacts.some((a) => {
       const run = a.workflow_run || {};
       const prText = (a.pull_requests || []).map((pr) => `#${pr.number} ${pr.title || ''}`).join(' ');
-      return [a.name, run.head_branch, run.head_sha, a.build_type, prText].some((v) => (v || '').toLowerCase().includes(term));
+      return [a.name, a.build_hash, run.head_branch, run.head_sha, run.id, a.build_type, prText].some((v) => String(v || '').toLowerCase().includes(term));
     });
   });
 
@@ -198,8 +267,7 @@ function render() {
       if (run.id && !runInfos.has(run.id)) runInfos.set(run.id, run);
     }
     const runs = [...runInfos.values()];
-    const hashed = artifacts.find((a) => a.build_hash);
-    const hash = (/^[0-9a-f]{40}$/.test(group.key) ? group.key : '') || (hashed && hashed.build_hash) || '';
+    const hash = groupHash(group);
     const shortSha = hash.slice(0, 7);
     const branch = runs.find((run) => run.head_branch) || {};
     const branchName = branch.head_branch || '';
@@ -224,10 +292,7 @@ function render() {
 
     const prs = [...group.prs.values()];
     const prLine = prs.length
-      ? `<div class="pr-line">${prs.map((pr) => {
-          const label = pr.title ? `PR #${pr.number} \u00b7 ${esc(pr.title)}` : `PR #${pr.number}`;
-          return `<a href="https://github.com/${esc(state.repo)}/pull/${pr.number}" target="_blank" rel="noopener">${label}</a>`;
-        }).join('<br>')}</div>`
+      ? `<div class="pr-line">${prs.map((pr) => pr.title ? `PR #${esc(pr.number)} \u00b7 ${esc(pr.title)}` : `PR #${esc(pr.number)}`).join('<br>')}</div>`
       : '';
 
     const typeCounts = new Map();
@@ -244,9 +309,8 @@ function render() {
 
     const base = commonName(artifacts) || 'Build';
     const displayName = hash ? `${base}.${hash}` : base;
-    const nameHtml = runs.length === 1
-      ? `<a href="${runUrl(runs[0].id)}" target="_blank" rel="noopener" title="View workflow run">${esc(displayName)}</a>`
-      : esc(displayName);
+    const copyButton = `<button type="button" class="copy-link" data-key="${esc(group.key)}" title="Copy link to this build" aria-label="Copy link to this build">${copyIcon}</button>`;
+    const nameHtml = `${esc(displayName)}${copyButton}`;
 
     const created = artifacts.map((a) => a.created_at).filter(Boolean).sort()[0] || '';
     const expires = artifacts.map((a) => a.expires_at).filter(Boolean).sort()[0] || '';
@@ -274,6 +338,8 @@ function render() {
       ? `${groups.length} build${groups.length === 1 ? '' : 's'}`
       : `${visible.length} of ${groups.length} builds`);
   }
+
+  syncUrl();
 }
 
 async function load() {
@@ -291,11 +357,10 @@ async function load() {
 
   state.repo = repo;
   state.error = false;
-  state.buildFilter = '';
-  state.branchFilter = '';
   $('repo').value = repo;
   setStatus('Loading...');
   $('empty').hidden = true;
+  syncUrl();
 
   if (remember) localStorage.setItem('ghArtifacts.repo', repo);
   else localStorage.removeItem('ghArtifacts.repo');
@@ -317,17 +382,46 @@ async function load() {
 
 $('controls').addEventListener('submit', (event) => {
   event.preventDefault();
+  state.buildFilter = '';
+  state.branchFilter = '';
   load();
 });
 
 $('filter').addEventListener('input', render);
 
+$('rows').addEventListener('click', async (event) => {
+  const button = event.target.closest('button.copy-link');
+  if (!button) return;
+  const group = state.groups.find((item) => item.key === button.dataset.key);
+  if (!group) return;
+  const copied = await copyText(itemUrl(group));
+  button.classList.toggle('copied', copied);
+  button.title = copied ? 'Link copied' : 'Copy failed';
+  setTimeout(() => {
+    button.classList.remove('copied');
+    button.title = 'Copy link to this build';
+  }, 1500);
+});
+
 $('filters').addEventListener('click', (event) => {
   const button = event.target.closest('button.chip');
   if (!button) return;
-  if (button.dataset.kind === 'build') state.buildFilter = button.dataset.value;
-  else if (button.dataset.kind === 'branch') state.branchFilter = state.branchFilter === button.dataset.value ? '' : button.dataset.value;
-  else return;
+  if (button.dataset.kind === 'build') {
+    const value = button.dataset.value;
+    if (!value) {
+      state.buildFilter = '';
+    } else {
+      const selected = selectedBuilds();
+      const index = selected.indexOf(value);
+      if (index === -1) selected.push(value);
+      else selected.splice(index, 1);
+      state.buildFilter = selected.join(',');
+    }
+  } else if (button.dataset.kind === 'branch') {
+    state.branchFilter = state.branchFilter === button.dataset.value ? '' : button.dataset.value;
+  } else {
+    return;
+  }
   render();
 });
 
@@ -337,6 +431,8 @@ $('filters').addEventListener('change', (event) => {
   render();
 });
 
+const paramRepo = repoFromInput(initialParams.get('repo') || '');
 const savedRepo = localStorage.getItem('ghArtifacts.repo');
-$('repo').value = savedRepo || defaultRepo;
+$('repo').value = paramRepo || savedRepo || defaultRepo;
+$('filter').value = initialParams.get('q') || '';
 load();

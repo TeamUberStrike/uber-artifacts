@@ -179,8 +179,23 @@ tbody tr:last-child td { border-bottom: 0; }
 tbody tr { transition: background 0.12s ease; }
 tbody tr:hover td { background: rgba(47, 129, 247, 0.05); }
 
-.name { font-weight: 600; font-size: 14.5px; word-break: break-all; }
+.name { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-weight: 600; font-size: 14.5px; word-break: break-all; }
 .name a { color: var(--accent); }
+.copy-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  opacity: 0.65;
+}
+.copy-link:hover { background: #21262d; border-color: var(--border); color: var(--text); opacity: 1; }
+.copy-link.copied { color: var(--accent); border-color: rgba(47, 129, 247, 0.5); background: rgba(47, 129, 247, 0.12); opacity: 1; }
 .dl-icon { margin-left: 6px; vertical-align: -1px; color: var(--muted); transition: color 0.15s ease; }
 .name a:hover .dl-icon { color: var(--accent); }
 .variants { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
