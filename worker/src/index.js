@@ -6,7 +6,7 @@ const MAX_RUN_DETAIL_LOOKUPS_CRON = 20;
 const MAX_JOB_LOOKUPS = 15;
 const MAX_JOB_LOOKUPS_CRON = 20;
 const MAX_PR_TITLE_LOOKUPS = 100;
-const MAX_REST_TITLE_FALLBACK = 12;
+const MAX_REST_TITLE_FALLBACK = 8;
 const CACHE_TTL_SECONDS = 60;
 const BUILD_TYPES = [
   ['Windows', ['windows', 'win64', 'win32', 'standalonewindows']],
@@ -208,12 +208,8 @@ async function fetchPullRequestTitlesRest(env, repo, numbers, cap = MAX_REST_TIT
 
 const METADATA_TTL_SECONDS = 30 * 24 * 60 * 60;
 
-function runMetaKey(repo, runId) {
-  return `https://artifacts-proxy.invalid/run/${repo.toLowerCase()}/${runId}`;
-}
-
-function prTitleKey(repo, number) {
-  return `https://artifacts-proxy.invalid/pr/${repo.toLowerCase()}/${number}`;
+function repoMetaKey(repo) {
+  return `https://artifacts-proxy.invalid/meta/${repo.toLowerCase()}`;
 }
 
 async function cacheGet(key) {
@@ -257,23 +253,33 @@ async function resolveMetadata(repo, env, runIds, options = {}) {
   const maxJobLookups = options.maxJobLookups || MAX_JOB_LOOKUPS;
   const useRestFallback = options.useRestFallback !== false;
 
-  const runInfo = new Map();
-  const needDetail = [];
-  await Promise.all(runIds.map(async (id) => {
-    const cached = await cacheGet(runMetaKey(repo, id));
-    if (cached) {
-      try {
-        const data = await cached.json();
-        if (typeof data.buildType === 'string' && data.buildType && Array.isArray(data.pullRequests)) {
-          runInfo.set(id, data);
-          return;
-        }
-      } catch {}
-    }
-    needDetail.push(id);
-  }));
+  const metaKey = repoMetaKey(repo);
+  const cachedRuns = {};
+  const cachedTitles = {};
+  const cached = await cacheGet(metaKey);
+  if (cached) {
+    try {
+      const data = await cached.json();
+      if (data && typeof data === 'object') {
+        Object.assign(cachedRuns, data.runs || {});
+        Object.assign(cachedTitles, data.titles || {});
+      }
+    } catch {}
+  }
 
-  const runPuts = [];
+  const runInfo = new Map();
+  for (const id of runIds) {
+    const info = cachedRuns[id];
+    if (info && typeof info.buildType === 'string' && info.buildType && Array.isArray(info.pullRequests)) {
+      runInfo.set(id, info);
+    }
+  }
+  const titles = new Map();
+  for (const [number, title] of Object.entries(cachedTitles)) {
+    if (title) titles.set(Number(number), title);
+  }
+
+  const needDetail = runIds.filter((id) => !runInfo.has(id));
   const needJobs = [];
   await Promise.all(needDetail.slice(0, maxRunDetailLookups).map(async (id) => {
     try {
@@ -284,7 +290,6 @@ async function resolveMetadata(repo, env, runIds, options = {}) {
       const buildType = detectBuildType([run.name, run.display_title]);
       if (buildType) {
         runInfo.set(id, { buildType, pullRequests });
-        runPuts.push(cachePutJson(runMetaKey(repo, id), { buildType, pullRequests }));
       } else {
         needJobs.push({ id, pullRequests });
       }
@@ -303,44 +308,32 @@ async function resolveMetadata(repo, env, runIds, options = {}) {
       }
       const buildType = detectBuildType(candidates) || 'Unknown';
       runInfo.set(id, { buildType, pullRequests });
-      runPuts.push(cachePutJson(runMetaKey(repo, id), { buildType, pullRequests }));
     } catch {}
   }));
-  await Promise.all(runPuts);
 
   const [owner, name] = repo.split('/');
   const prNumbers = [...new Set([...runInfo.values()].flatMap((info) => info.pullRequests))];
-  const titles = new Map();
-  const missingNumbers = [];
-  await Promise.all(prNumbers.map(async (number) => {
-    const cached = await cacheGet(prTitleKey(repo, number));
-    if (cached) {
-      try {
-        const data = await cached.json();
-        if (data.title) titles.set(number, data.title);
-        return;
-      } catch {}
-    }
-    missingNumbers.push(number);
-  }));
+  const missingNumbers = prNumbers.filter((number) => !titles.has(number));
 
   if (missingNumbers.length && isSafeRepoPart(owner) && isSafeRepoPart(name)) {
     const limited = missingNumbers.slice(0, MAX_PR_TITLE_LOOKUPS);
-    const titlePuts = [];
-    const result = await fetchPullRequestTitles(env, owner, name, limited);
-    for (const [number, title] of result.titles) {
-      titles.set(number, title);
-      titlePuts.push(cachePutJson(prTitleKey(repo, number), { title }));
-    }
-    if (!result.graphqlOk && useRestFallback) {
-      const restTitles = await fetchPullRequestTitlesRest(env, repo, limited);
-      for (const [number, title] of restTitles) {
-        titles.set(number, title);
-        titlePuts.push(cachePutJson(prTitleKey(repo, number), { title }));
+    try {
+      const result = await fetchPullRequestTitles(env, owner, name, limited);
+      for (const [number, title] of result.titles) titles.set(number, title);
+      if (!result.graphqlOk && useRestFallback) {
+        const restTitles = await fetchPullRequestTitlesRest(env, repo, limited);
+        for (const [number, title] of restTitles) titles.set(number, title);
       }
-    }
-    await Promise.all(titlePuts);
+    } catch {}
   }
+
+  const runsOut = {};
+  for (const [id, info] of runInfo) runsOut[id] = info;
+  const titlesOut = {};
+  for (const [number, title] of titles) titlesOut[number] = title;
+  try {
+    await cachePutJson(metaKey, { runs: runsOut, titles: titlesOut });
+  } catch {}
 
   return { runInfo, titles };
 }
@@ -516,7 +509,8 @@ export default {
       throw new HttpError(404, 'Not found');
     } catch (error) {
       const status = error instanceof HttpError ? error.status : 500;
-      const message = error instanceof HttpError ? error.message : 'Internal proxy error';
+      const detail = error instanceof HttpError ? '' : (error && error.message) || '';
+      const message = error instanceof HttpError ? error.message : (detail ? `Internal proxy error: ${detail}` : 'Internal proxy error');
       if (status >= 500 && !(error instanceof HttpError)) console.error(error);
       return jsonResponse(request, env, { error: message }, status);
     }
